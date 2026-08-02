@@ -1,0 +1,55 @@
+{
+  "name": "audiobook-library",
+  "productName": "Audiobook Library",
+  "version": "0.1.0",
+  "description": "Local-only desktop app for downloading, organizing, and playing audiobooks.",
+  "type": "module",
+  "main": "electron/main.js",
+  "private": true,
+  "author": "melvinsandersen10@gmail.com",
+  "scripts": {
+    "dev": "concurrently -k \"vite\" \"wait-on http://localhost:5173 && node scripts/start-dev.cjs\"",
+    "build": "vite build",
+    "dist:mac": "npm run build && electron-builder --mac",
+    "dist:win": "npm run build && electron-builder --win",
+    "start": "electron .",
+    "test": "vitest run --config tests/vitest.config.js"
+  },
+  "dependencies": {
+    "music-metadata": "^11.14.0",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "webtorrent": "3.0.16"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^6.0.4",
+    "concurrently": "^10.0.3",
+    "electron": "^43.2.0",
+    "electron-builder": "^26.15.3",
+    "vite": "^8.1.5",
+    "vitest": "^4.1.10",
+    "wait-on": "^9.1.0"
+  },
+  "build": {
+    "appId": "com.melvin.audiobooklibrary",
+    "productName": "Audiobook Library",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "package.json"
+    ],
+    "protocols": [
+      { "name": "Magnet URI", "schemes": ["magnet"], "role": "Viewer" }
+    ],
+    "mac": {
+      "target": "dmg",
+      "category": "public.app-category.utilities"
+    },
+    "win": {
+      "target": "nsis"
+    }
+  }
+}

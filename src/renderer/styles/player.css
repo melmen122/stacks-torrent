@@ -1,0 +1,222 @@
+.player-bar {
+  height: var(--player-height);
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--space-5);
+  background: var(--bg-elevated);
+  border-top: 1px solid var(--border-subtle);
+  padding: 0 var(--space-5);
+  box-shadow: var(--shadow-lg);
+}
+
+.player-book {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  width: 260px;
+  flex-shrink: 0;
+  min-width: 0;
+}
+.player-cover {
+  width: 52px;
+  height: 52px;
+  border-radius: var(--radius-sm);
+  object-fit: cover;
+  flex-shrink: 0;
+}
+.player-cover-placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.player-cover-placeholder span {
+  font-size: 16px;
+  font-weight: 700;
+  color: rgba(255, 255, 255, 0.85);
+}
+.player-meta {
+  min-width: 0;
+}
+.player-title {
+  font-size: var(--fs-sm);
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.player-author {
+  font-size: var(--fs-xs);
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.player-file-index {
+  color: var(--text-tertiary);
+}
+
+.player-controls {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.player-buttons {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+.skip-btn {
+  position: relative;
+}
+.skip-btn-label {
+  position: absolute;
+  bottom: -2px;
+  right: -2px;
+  font-size: 9px;
+  font-weight: 700;
+  background: var(--bg-elevated-2);
+  border-radius: var(--radius-full);
+  padding: 0 3px;
+  color: var(--text-secondary);
+  pointer-events: none;
+}
+
+.player-seek {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  width: 100%;
+  max-width: 560px;
+}
+.player-time {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
+  width: 42px;
+  flex-shrink: 0;
+}
+.player-time:last-child {
+  text-align: right;
+}
+
+.seek-slider, .volume-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 4px;
+  border-radius: var(--radius-full);
+  background: var(--bg-elevated-2);
+  flex: 1;
+  outline: none;
+}
+.seek-slider::-webkit-slider-thumb, .volume-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: var(--accent);
+  cursor: pointer;
+  transition: transform var(--transition-fast);
+}
+.seek-slider::-webkit-slider-thumb:hover, .volume-slider::-webkit-slider-thumb:hover {
+  transform: scale(1.15);
+}
+.seek-slider::-moz-range-thumb, .volume-slider::-moz-range-thumb {
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: none;
+  cursor: pointer;
+}
+
+.player-side {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 220px;
+  flex-shrink: 0;
+  justify-content: flex-end;
+  color: var(--text-secondary);
+}
+.volume-slider {
+  width: 80px;
+  flex: none;
+}
+
+/* Chapters popover trigger, anchored in the player's right-hand controls */
+.chapter-trigger {
+  position: relative;
+}
+.chapter-menu {
+  position: absolute;
+  bottom: calc(100% + 10px);
+  right: 0;
+  width: 280px;
+  max-height: 320px;
+  overflow-y: auto;
+  background: var(--bg-elevated-2);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+  padding: var(--space-2);
+  z-index: 60;
+}
+.chapter-menu-header {
+  font-size: var(--fs-xs);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-tertiary);
+  padding: 4px var(--space-2) var(--space-2);
+}
+.chapter-menu-empty {
+  padding: var(--space-2);
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+}
+.chapter-menu-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.chapter-menu-item {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  background: transparent;
+  border: none;
+  text-align: left;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  font-size: var(--fs-sm);
+}
+.chapter-menu-item:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+.chapter-menu-item.active {
+  background: var(--accent-muted-bg);
+  color: var(--accent);
+  font-weight: 600;
+}
+.chapter-menu-item-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chapter-menu-item-time {
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+  font-size: var(--fs-xs);
+  color: var(--text-tertiary);
+}
+.chapter-menu-item.active .chapter-menu-item-time {
+  color: var(--accent);
+}

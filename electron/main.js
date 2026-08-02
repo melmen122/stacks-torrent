@@ -1,0 +1,688 @@
+// electron/main.js
+//
+// App lifecycle, window creation, the `media://` protocol, and IPC channel
+// registration. See docs/PLAN.md for the exact IPC contract this must match.
+
+import { app, BrowserWindow, ipcMain, dialog, protocol } from 'electron'
+import path from 'node:path'
+import crypto from 'node:crypto'
+import { createReadStream, promises as fs } from 'node:fs'
+import { Readable } from 'node:stream'
+import { fileURLToPath } from 'node:url'
+
+import { createLibraryStore } from './lib/library.js'
+import { createTorrentManager } from './lib/torrents.js'
+import { scanBookFiles, isExternalCoverName, ALLOWED_AUDIO_EXTENSIONS } from './lib/metadata.js'
+import { groupImportPaths } from './lib/importGrouping.js'
+import { parseRange } from './lib/mediaRange.js'
+import { resolveMediaAccess } from './lib/mediaGate.js'
+import { isMagnetUri, parseMagnetFromArgv } from './lib/magnetLink.js'
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url))
+
+// ---------------------------------------------------------------------------
+// Single-instance lock — must run before any other app init (docs/PLAN3.md).
+// If another instance already holds the lock, quit immediately; that primary
+// instance receives this launch's magnet (if any) via 'second-instance'
+// below, so nothing is lost by quitting here.
+// ---------------------------------------------------------------------------
+const gotSingleInstanceLock = app.requestSingleInstanceLock()
+
+if (!gotSingleInstanceLock) {
+  app.quit()
+} else {
+  // `focusMainWindow`, `handleIncomingMagnet`, `registerAsDefaultMagnetHandler`,
+  // and `bootstrap` are all hoisted `function` declarations defined later in
+  // this file — safe to reference here regardless of textual order.
+
+  // Second instance (all OSes): the OS/user attempted to launch a new copy
+  // (e.g. by clicking another magnet: link) — focus the existing window and
+  // check its argv for a magnet.
+  app.on('second-instance', (event, argv) => {
+    focusMainWindow()
+    const magnet = parseMagnetFromArgv(argv)
+    if (magnet) handleIncomingMagnet(magnet)
+  })
+
+  // macOS: registered EARLY (can fire before 'ready') so a cold launch by
+  // clicking a magnet: link — the app itself wasn't running yet — is never
+  // missed. `handleIncomingMagnet` queues if `torrentManager` isn't ready yet.
+  app.on('open-url', (event, url) => {
+    event.preventDefault()
+    handleIncomingMagnet(url)
+  })
+
+  registerAsDefaultMagnetHandler()
+
+  // Windows/Linux: launching the app via a magnet: link delivers it as a
+  // plain argv token on this (first) launch — there's no 'open-url' event
+  // outside macOS. `second-instance` (above) covers subsequent launches
+  // while already running.
+  const argvMagnet = parseMagnetFromArgv(process.argv)
+  if (argvMagnet) handleIncomingMagnet(argvMagnet)
+
+  app.whenReady().then(bootstrap).catch((err) => {
+    console.error('[main] failed to start:', err)
+    app.quit()
+  })
+}
+
+// Must be registered before `app` is ready.
+protocol.registerSchemesAsPrivileged([
+  {
+    scheme: 'media',
+    privileges: {
+      standard: true,
+      secure: true,
+      supportFetchAPI: true,
+      stream: true,
+      corsEnabled: true
+    }
+  }
+])
+
+let mainWindow = null
+let library = null
+let torrentManager = null
+let settingsCache = null
+
+let userDataDir = ''
+let libraryFilePath = ''
+let coversDir = ''
+let settingsFilePath = ''
+let defaultDownloadDir = ''
+let torrentsFilePath = ''
+let torrentFilesDir = ''
+
+function getWindow() {
+  return mainWindow
+}
+
+function broadcastLibraryChanged() {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('library:changed')
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Settings (userData/settings.json)
+// ---------------------------------------------------------------------------
+
+async function loadSettings() {
+  try {
+    const raw = await fs.readFile(settingsFilePath, 'utf-8')
+    const parsed = JSON.parse(raw)
+    settingsCache = { downloadDir: defaultDownloadDir, ...parsed }
+  } catch (err) {
+    if (err.code !== 'ENOENT') console.error('[settings] failed to read settings.json:', err)
+    settingsCache = { downloadDir: defaultDownloadDir }
+  }
+  return settingsCache
+}
+
+async function saveSettings(patch) {
+  settingsCache = { ...settingsCache, ...patch }
+  await fs.mkdir(userDataDir, { recursive: true })
+  const tmpPath = path.join(userDataDir, `.settings.json.${process.pid}.${Date.now()}.tmp`)
+  await fs.writeFile(tmpPath, JSON.stringify(settingsCache, null, 2), 'utf-8')
+  await fs.rename(tmpPath, settingsFilePath)
+  return settingsCache
+}
+
+// ---------------------------------------------------------------------------
+// Import helpers
+// ---------------------------------------------------------------------------
+
+function generateBookId() {
+  return `b${crypto.randomBytes(8).toString('hex')}`
+}
+
+const AUDIO_DIALOG_FILTERS = [
+  { name: 'Audio files', extensions: ALLOWED_AUDIO_EXTENSIONS.map((e) => e.slice(1)) }
+]
+
+/**
+ * Prompt the user to pick a folder and/or individual audio files to import.
+ *
+ * macOS's native open dialog can present a single picker that allows
+ * choosing both files and folders together. Windows and Linux cannot combine
+ * `openFile` + `openDirectory` in one dialog (Electron falls back to a
+ * directory-only picker there), which would silently make loose-file import
+ * impossible — so on those platforms we first ask Folder vs Files via a
+ * message box, then show the matching single-purpose dialog. The renderer
+ * passes no arguments to `library:import`, so this choice is made entirely
+ * on the backend.
+ */
+async function pickImportPaths(win) {
+  if (process.platform === 'darwin') {
+    const result = await dialog.showOpenDialog(win, {
+      title: 'Import audiobook files or folder',
+      properties: ['openFile', 'openDirectory', 'multiSelections'],
+      filters: AUDIO_DIALOG_FILTERS
+    })
+    return result.canceled ? [] : result.filePaths
+  }
+
+  const choice = await dialog.showMessageBox(win, {
+    type: 'question',
+    title: 'Import Audiobook',
+    message: 'Import a whole folder, or select individual audio files?',
+    buttons: ['Folder', 'Files', 'Cancel'],
+    defaultId: 0,
+    cancelId: 2
+  })
+  if (choice.response === 2) return []
+
+  const properties = choice.response === 0 ? ['openDirectory', 'multiSelections'] : ['openFile', 'multiSelections']
+  const result = await dialog.showOpenDialog(win, {
+    title: 'Import audiobook files or folder',
+    properties,
+    filters: AUDIO_DIALOG_FILTERS
+  })
+  return result.canceled ? [] : result.filePaths
+}
+
+async function listCoverCandidates(dir) {
+  try {
+    const entries = await fs.readdir(dir, { withFileTypes: true })
+    return entries
+      .filter((e) => e.isFile() && isExternalCoverName(e.name))
+      .map((e) => path.join(dir, e.name))
+  } catch {
+    return []
+  }
+}
+
+/**
+ * Scan and add each already-grouped set of files (see importGrouping.js) as
+ * a book. Shared by both `library:import` (native dialog) and
+ * `library:importPaths` (drag & drop).
+ */
+async function importGroupsToBooks(groups) {
+  const addedBooks = []
+  for (const group of groups) {
+    const bookId = generateBookId()
+    const coverCandidates = await listCoverCandidates(group.coverDir)
+    const scanned = await scanBookFiles(group.files, {
+      bookId,
+      coversDir,
+      folderName: group.folderName,
+      extraCoverCandidates: coverCandidates
+    })
+    if (!scanned.files.length) continue
+    const book = await library.addBook({ id: bookId, ...scanned })
+    addedBooks.push(book)
+  }
+  return addedBooks
+}
+
+// ---------------------------------------------------------------------------
+// media:// protocol — serves only allowed audio files + the covers dir.
+// ---------------------------------------------------------------------------
+
+function mimeTypeFor(ext) {
+  switch (ext) {
+    case '.mp3':
+      return 'audio/mpeg'
+    case '.m4a':
+    case '.m4b':
+      return 'audio/mp4'
+    case '.aac':
+      return 'audio/aac'
+    case '.flac':
+      return 'audio/flac'
+    case '.ogg':
+    case '.opus':
+      return 'audio/ogg'
+    case '.wav':
+      return 'audio/wav'
+    case '.jpg':
+    case '.jpeg':
+      return 'image/jpeg'
+    case '.png':
+      return 'image/png'
+    default:
+      return 'application/octet-stream'
+  }
+}
+
+function registerMediaProtocol() {
+  protocol.handle('media', async (request) => {
+    try {
+      const url = new URL(request.url)
+      if (url.hostname !== 'file') return new Response('Not found', { status: 404 })
+
+      const encodedPath = url.pathname.replace(/^\/+/, '')
+      if (!encodedPath) return new Response('Not found', { status: 404 })
+
+      const filePath = decodeURIComponent(encodedPath)
+      const { allowed, resolvedPath, ext } = resolveMediaAccess(filePath, coversDir)
+      if (!allowed) return new Response('Forbidden', { status: 403 })
+
+      const stat = await fs.stat(resolvedPath).catch(() => null)
+      if (!stat || !stat.isFile()) return new Response('Not found', { status: 404 })
+
+      const mimeType = mimeTypeFor(ext)
+      const rangeHeader = request.headers.get('range') ?? request.headers.get('Range')
+      const range = parseRange(rangeHeader, stat.size)
+
+      if (range?.unsatisfiable) {
+        return new Response(null, {
+          status: 416,
+          headers: { 'Content-Range': `bytes */${stat.size}` }
+        })
+      }
+
+      if (range) {
+        const { start, end } = range
+        const stream = createReadStream(resolvedPath, { start, end })
+        return new Response(Readable.toWeb(stream), {
+          status: 206,
+          headers: {
+            'Content-Type': mimeType,
+            'Content-Length': String(end - start + 1),
+            'Content-Range': `bytes ${start}-${end}/${stat.size}`,
+            'Accept-Ranges': 'bytes'
+          }
+        })
+      }
+
+      const stream = createReadStream(resolvedPath)
+      return new Response(Readable.toWeb(stream), {
+        status: 200,
+        headers: {
+          'Content-Type': mimeType,
+          'Content-Length': String(stat.size),
+          'Accept-Ranges': 'bytes'
+        }
+      })
+    } catch (err) {
+      console.error('[media protocol] error serving request:', err)
+      return new Response('Internal error', { status: 500 })
+    }
+  })
+}
+
+// ---------------------------------------------------------------------------
+// System: magnet: link default-handler + incoming magnet handling.
+// See docs/PLAN3.md.
+// ---------------------------------------------------------------------------
+
+/**
+ * Registers this app as eligible to handle magnet: links at the OS level.
+ *
+ * On Windows/Linux this uses the registry and is sufficient by itself. On
+ * macOS, the app must ALSO declare the scheme in its Info.plist (handled at
+ * build time — electron-builder maps package.json's `build.protocols` to
+ * `CFBundleURLTypes`) — and even then, macOS still requires the *user* to
+ * confirm/choose Audiobook Library as the default the first time (the same
+ * way switching any URL-scheme handler works); this call only makes the app
+ * *eligible*, it cannot force the OS default on its own.
+ *
+ * @returns {boolean} whether the underlying registration call succeeded.
+ */
+function registerAsDefaultMagnetHandler() {
+  if (process.defaultApp) {
+    // Running under the bare `electron` binary (dev/unpackaged): without
+    // passing the exec path + script path, the OS would register the
+    // generic Electron binary itself rather than this app.
+    if (process.argv.length < 2) return false
+    return app.setAsDefaultProtocolClient('magnet', process.execPath, [path.resolve(process.argv[1])])
+  }
+  return app.setAsDefaultProtocolClient('magnet')
+}
+
+// Magnets received before `torrentManager` AND `mainWindow` both exist —
+// e.g. a cold start where the app was launched BY clicking a magnet: link —
+// are queued here and flushed once `bootstrap()` finishes. Gated on this
+// explicit flag (set true only after `createWindow()`) rather than just
+// `torrentManager` truthiness: `torrentManager` is assigned partway through
+// `bootstrap()`, well before `createWindow()` runs, so gating on it alone
+// would let a magnet through in that window while `mainWindow` is still
+// null, silently dropping the focus/`system:magnet-received` step below.
+let appReadyForMagnets = false
+const pendingMagnets = []
+
+// Pull-model complement to the `system:magnet-received` push (see
+// `processIncomingMagnet`): on a cold start, `did-finish-load` firing does
+// NOT guarantee the renderer's React tree has mounted and its
+// `onMagnetReceived` subscription (attached in a `useEffect`) has actually
+// registered yet — that can lag behind page load, silently dropping the
+// push. Every processed magnet is also remembered here; the renderer pulls
+// via `system:consumePendingMagnet` on mount to catch anything the push
+// missed. Capped defensively so a very long session can't grow this
+// unboundedly if the renderer never happens to pull (e.g. only ever using
+// the push path, which is the common/warm case).
+const MAX_PENDING_CONSUMABLE_MAGNETS = 20
+const pendingConsumableMagnets = []
+
+function rememberPendingMagnet(payload) {
+  pendingConsumableMagnets.push(payload)
+  if (pendingConsumableMagnets.length > MAX_PENDING_CONSUMABLE_MAGNETS) {
+    pendingConsumableMagnets.shift()
+  }
+}
+
+/** Consumes (returns + removes) the oldest not-yet-pulled magnet, or null. */
+function consumePendingMagnet() {
+  return pendingConsumableMagnets.length ? pendingConsumableMagnets.shift() : null
+}
+
+function focusMainWindow() {
+  if (!mainWindow || mainWindow.isDestroyed()) return
+  if (mainWindow.isMinimized()) mainWindow.restore()
+  mainWindow.show()
+  mainWindow.focus()
+}
+
+const WINDOW_READY_TIMEOUT_MS = 10000
+
+/**
+ * Resolves once `mainWindow` exists and has finished its initial load (or
+ * immediately, if it's already loaded/there's no window at all) — so the
+ * `system:magnet-received` event sent right after has the best chance of
+ * reaching an already-mounted renderer. Also resolves on `did-fail-load` or
+ * after a timeout, so a page that never finishes loading can't hang the
+ * flush loop (`flushPendingMagnets`) forever.
+ */
+function whenWindowReady() {
+  return new Promise((resolve) => {
+    if (!mainWindow || mainWindow.isDestroyed()) return resolve()
+    if (!mainWindow.webContents.isLoading()) return resolve()
+
+    let settled = false
+    let timer = null
+    const settle = () => {
+      if (settled) return
+      settled = true
+      if (timer) clearTimeout(timer)
+      resolve()
+    }
+
+    mainWindow.webContents.once('did-finish-load', settle)
+    mainWindow.webContents.once('did-fail-load', settle)
+    timer = setTimeout(settle, WINDOW_READY_TIMEOUT_MS)
+    if (typeof timer.unref === 'function') timer.unref()
+  })
+}
+
+async function processIncomingMagnet(magnet) {
+  // Add failure (e.g. a malformed magnet) must not skip focusing the window
+  // or leave the user with zero feedback — caught here so the focus/notify
+  // steps below always run regardless of whether the add succeeded.
+  let error = null
+  try {
+    // Reuses the exact same add path as the `torrents:add` IPC handler,
+    // including its webtorrent-level duplicate-add dedupe (see torrents.js),
+    // so re-clicking a magnet that's already downloading (or already
+    // imported) just resolves instead of starting a second download/import.
+    const settings = settingsCache ?? (await loadSettings())
+    await torrentManager.add(magnet, settings.downloadDir)
+  } catch (err) {
+    console.error('[system] failed to add incoming magnet:', err)
+    error = err?.message || 'Failed to add magnet link'
+  }
+
+  await whenWindowReady()
+  focusMainWindow()
+
+  const payload = error ? { magnet, error } : { magnet }
+  // Remembered regardless of push delivery so the renderer's mount-time
+  // pull (`system:consumePendingMagnet`) can always catch up; the renderer
+  // is expected to dedupe by magnet string if both push and pull deliver
+  // the same one (harmless — navigate-to-Downloads + toast is idempotent).
+  rememberPendingMagnet(payload)
+
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('system:magnet-received', payload)
+  }
+}
+
+/**
+ * Single funnel for all three magnet entry points (macOS `open-url`,
+ * Windows/Linux first-launch argv, `second-instance` argv). Ignores
+ * anything that isn't a magnet: URI. Queues if the torrent manager isn't
+ * ready yet and flushes once it is (see `pendingMagnets`/`flushPendingMagnets`).
+ */
+function handleIncomingMagnet(url) {
+  if (!isMagnetUri(url)) return
+  if (!appReadyForMagnets || !torrentManager) {
+    pendingMagnets.push(url)
+    return
+  }
+  processIncomingMagnet(url).catch((err) => {
+    console.error('[system] failed to handle incoming magnet:', err)
+  })
+}
+
+async function flushPendingMagnets() {
+  const queued = pendingMagnets.splice(0, pendingMagnets.length)
+  for (const magnet of queued) {
+    try {
+      await processIncomingMagnet(magnet)
+    } catch (err) {
+      console.error('[system] failed to handle queued incoming magnet:', err)
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// IPC
+// ---------------------------------------------------------------------------
+
+function registerIpcHandlers() {
+  ipcMain.handle('library:list', async () => library.list())
+
+  ipcMain.handle('library:import', async () => {
+    const win = getWindow()
+    const filePaths = await pickImportPaths(win)
+    if (!filePaths.length) return []
+
+    const { groups } = await groupImportPaths(filePaths)
+    const addedBooks = await importGroupsToBooks(groups)
+
+    if (addedBooks.length) broadcastLibraryChanged()
+    return addedBooks
+  })
+
+  ipcMain.handle('library:importPaths', async (event, paths) => {
+    const validPaths = Array.isArray(paths) ? paths.filter((p) => typeof p === 'string' && p.length > 0) : []
+    if (!validPaths.length) return { added: [], skipped: [] }
+
+    const { groups, skipped } = await groupImportPaths(validPaths)
+    const addedBooks = await importGroupsToBooks(groups)
+
+    if (addedBooks.length) broadcastLibraryChanged()
+    return { added: addedBooks, skipped }
+  })
+
+  ipcMain.handle('library:setGenre', async (event, bookId, genreId) => {
+    const book = await library.setGenre(bookId, genreId)
+    broadcastLibraryChanged()
+    return book
+  })
+
+  ipcMain.handle('library:removeBook', async (event, bookId, opts) => {
+    const result = await library.removeBook(bookId, opts)
+    broadcastLibraryChanged()
+    return result
+  })
+
+  ipcMain.handle('genres:create', async (event, name) => {
+    const genre = await library.createGenre(name)
+    broadcastLibraryChanged()
+    return genre
+  })
+
+  ipcMain.handle('genres:rename', async (event, id, name) => {
+    const genre = await library.renameGenre(id, name)
+    broadcastLibraryChanged()
+    return genre
+  })
+
+  ipcMain.handle('genres:delete', async (event, id) => {
+    const result = await library.deleteGenre(id)
+    broadcastLibraryChanged()
+    return result
+  })
+
+  ipcMain.handle('torrents:add', async (event, magnetUri) => {
+    let torrentId = magnetUri
+    if (!torrentId) {
+      const win = getWindow()
+      const result = await dialog.showOpenDialog(win, {
+        title: 'Choose a .torrent file',
+        properties: ['openFile'],
+        filters: [{ name: 'Torrent files', extensions: ['torrent'] }]
+      })
+      if (result.canceled || !result.filePaths.length) return null
+      torrentId = result.filePaths[0]
+    }
+    const settings = settingsCache ?? (await loadSettings())
+    return torrentManager.add(torrentId, settings.downloadDir)
+  })
+
+  ipcMain.handle('torrents:list', async () => torrentManager.list())
+  ipcMain.handle('torrents:pause', async (event, infoHash) => torrentManager.pause(infoHash))
+  ipcMain.handle('torrents:resume', async (event, infoHash) => torrentManager.resume(infoHash))
+  ipcMain.handle('torrents:remove', async (event, infoHash, opts) => torrentManager.remove(infoHash, opts))
+
+  ipcMain.handle('player:savePosition', async (event, bookId, fileIndex, seconds) =>
+    library.savePosition(bookId, fileIndex, seconds)
+  )
+
+  ipcMain.handle('settings:get', async () => settingsCache ?? loadSettings())
+  ipcMain.handle('settings:set', async (event, patch) => saveSettings(patch))
+
+  ipcMain.handle('settings:chooseDownloadDir', async () => {
+    const win = getWindow()
+    const result = await dialog.showOpenDialog(win, {
+      title: 'Choose Download Folder',
+      properties: ['openDirectory', 'createDirectory']
+    })
+    if (result.canceled || !result.filePaths.length) return null
+
+    const chosenDir = result.filePaths[0]
+    await fs.mkdir(chosenDir, { recursive: true }).catch((err) => {
+      console.error('[settings] failed to create chosen download dir:', err)
+    })
+    // Only affects new torrents going forward — existing ones keep the
+    // downloadDir they were originally added with (persisted per-torrent in
+    // torrents.json), unaffected by this change.
+    return saveSettings({ downloadDir: chosenDir })
+  })
+
+  ipcMain.handle('system:setDefaultMagnetHandler', async () => {
+    const ok = registerAsDefaultMagnetHandler()
+    const isDefault = app.isDefaultProtocolClient('magnet')
+    return { ok, isDefault }
+  })
+
+  ipcMain.handle('system:isDefaultMagnetHandler', async () => app.isDefaultProtocolClient('magnet'))
+
+  // Pull-model complement to the `system:magnet-received` push — see the
+  // `pendingConsumableMagnets` comment above. Returns `{magnet}` (or
+  // `{magnet, error}`) for the oldest not-yet-pulled magnet, clearing it in
+  // the same call, or `null` if there's nothing pending.
+  ipcMain.handle('system:consumePendingMagnet', async () => consumePendingMagnet())
+}
+
+// ---------------------------------------------------------------------------
+// Window + lifecycle
+// ---------------------------------------------------------------------------
+
+function createWindow() {
+  mainWindow = new BrowserWindow({
+    width: 1280,
+    height: 800,
+    minWidth: 1100,
+    minHeight: 720,
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.cjs'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true
+    }
+  })
+
+  // Keyed solely off this env var (set only by `npm run dev` via
+  // scripts/start-dev.cjs) rather than `!app.isPackaged` — `npm start`
+  // (`electron .`) runs unpackaged too, so an `!app.isPackaged` check would
+  // make it try to load a dead http://localhost:5173 instead of the built
+  // dist/index.html whenever the Vite dev server isn't running.
+  const devServerUrl = process.env.VITE_DEV_SERVER_URL
+
+  if (devServerUrl) {
+    mainWindow.loadURL(devServerUrl)
+  } else {
+    mainWindow.loadFile(path.join(__dirname, '../dist/index.html'))
+  }
+
+  mainWindow.on('closed', () => {
+    mainWindow = null
+  })
+}
+
+async function bootstrap() {
+  userDataDir = app.getPath('userData')
+  libraryFilePath = path.join(userDataDir, 'library.json')
+  coversDir = path.join(userDataDir, 'covers')
+  settingsFilePath = path.join(userDataDir, 'settings.json')
+  defaultDownloadDir = path.join(userDataDir, 'downloads')
+  torrentsFilePath = path.join(userDataDir, 'torrents.json')
+  torrentFilesDir = path.join(userDataDir, 'torrents')
+
+  await fs.mkdir(coversDir, { recursive: true })
+
+  library = createLibraryStore(libraryFilePath)
+  await library.load()
+
+  await loadSettings()
+  await fs.mkdir(settingsCache.downloadDir, { recursive: true }).catch((err) => {
+    console.error('[main] failed to create download dir:', err)
+  })
+
+  torrentManager = createTorrentManager({ library, coversDir, getWindow, torrentsFilePath, torrentFilesDir })
+
+  registerMediaProtocol()
+  registerIpcHandlers()
+
+  // Re-add persisted, non-done torrents from a previous session. Runs
+  // before any window exists — safe, since progress/done broadcasts inside
+  // torrentManager already no-op whenever `getWindow()` returns null.
+  await torrentManager.restorePersisted().catch((err) => {
+    console.error('[main] failed to restore persisted torrents:', err)
+  })
+
+  createWindow()
+
+  // Only now are both `torrentManager` and `mainWindow` guaranteed to
+  // exist — flush any magnet(s) received before this point (e.g. a cold
+  // start where the app was launched BY clicking a magnet: link), which
+  // `handleIncomingMagnet` queued until now.
+  appReadyForMagnets = true
+  await flushPendingMagnets()
+}
+
+app.on('window-all-closed', () => {
+  if (process.platform !== 'darwin') app.quit()
+})
+
+app.on('activate', () => {
+  if (BrowserWindow.getAllWindows().length === 0) createWindow()
+})
+
+let quitting = false
+
+app.on('before-quit', (event) => {
+  if (quitting || !torrentManager) return
+  // Defer the actual quit until the torrent client (and its underlying
+  // chunk-store file handles) has fully torn down, so the process can't
+  // exit mid-write and truncate in-progress piece writes.
+  event.preventDefault()
+  quitting = true
+  torrentManager
+    .destroy()
+    .catch((err) => console.error('[main] error destroying torrent client:', err))
+    .finally(() => app.quit())
+})

@@ -1,0 +1,220 @@
+/* Dropdown menu (genre row menu, book card menu) — portaled to
+   document.body (see IconMenu.jsx) and positioned via inline top/left, so
+   it's never clipped by an ancestor's overflow:hidden/auto (.book-card,
+   .app-main, .app-shell, .sidebar all use one or the other). */
+.icon-menu {
+  position: fixed;
+  min-width: 170px;
+  max-width: 280px;
+  background: var(--bg-elevated-2);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+  padding: var(--space-1);
+  z-index: 300;
+  display: flex;
+  flex-direction: column;
+  max-height: 260px;
+  overflow-y: auto;
+}
+.icon-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  text-align: left;
+  background: transparent;
+  border: none;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-sm);
+  color: var(--text-primary);
+  white-space: nowrap;
+}
+.icon-menu-item:hover {
+  background: var(--bg-hover);
+}
+.icon-menu-item.danger {
+  color: var(--danger);
+}
+.icon-menu-item.danger:hover {
+  background: var(--danger-bg);
+}
+.icon-menu-item.active {
+  color: var(--accent);
+}
+.icon-menu-check {
+  width: 14px;
+  display: inline-flex;
+  flex-shrink: 0;
+}
+.icon-menu-separator {
+  height: 1px;
+  background: var(--border-subtle);
+  margin: var(--space-1) 6px;
+}
+
+/* Confirm dialog */
+.dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(6, 7, 10, 0.6);
+  backdrop-filter: blur(2px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+.dialog-card {
+  width: 380px;
+  max-width: 90vw;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  padding: var(--space-5);
+  box-shadow: var(--shadow-lg);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+.dialog-card h3 {
+  font-size: var(--fs-md);
+}
+.dialog-message {
+  color: var(--text-secondary);
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+}
+.dialog-checkbox {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+}
+.dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-3);
+  margin-top: var(--space-2);
+}
+
+/* Toasts */
+.toast-stack {
+  position: fixed;
+  bottom: calc(var(--player-height) + var(--space-4));
+  right: var(--space-5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  z-index: 200;
+}
+.toast {
+  background: var(--bg-elevated-2);
+  border: 1px solid var(--border-strong);
+  border-left: 3px solid var(--info);
+  border-radius: var(--radius-md);
+  padding: var(--space-3) var(--space-4);
+  box-shadow: var(--shadow-md);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+  max-width: 320px;
+  animation: toast-in 200ms ease;
+}
+.toast-success {
+  border-left-color: var(--success);
+}
+.toast-info {
+  border-left-color: var(--info);
+}
+.toast-error {
+  border-left-color: var(--danger);
+}
+@keyframes toast-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* No-Electron notice */
+.no-electron-notice {
+  height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-base);
+}
+.no-electron-card {
+  max-width: 420px;
+  text-align: center;
+  padding: var(--space-6);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+}
+.no-electron-icon {
+  font-size: 40px;
+  margin-bottom: var(--space-3);
+}
+.no-electron-card h1 {
+  font-size: var(--fs-lg);
+  margin-bottom: var(--space-3);
+}
+.no-electron-card p {
+  color: var(--text-secondary);
+  font-size: var(--fs-sm);
+  line-height: 1.6;
+}
+.no-electron-card code {
+  background: var(--bg-elevated-2);
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+/* Drag & drop import overlay */
+.drop-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 500;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(20, 21, 26, 0.55);
+  backdrop-filter: blur(3px);
+  pointer-events: none;
+  animation: drop-overlay-in 150ms ease;
+}
+.drop-overlay-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-7) var(--space-6);
+  border: 2px dashed var(--accent);
+  border-radius: var(--radius-lg);
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+}
+.drop-overlay-card.importing {
+  border-style: solid;
+  border-color: var(--border-strong);
+}
+.drop-overlay-card.importing .drop-overlay-icon {
+  animation: drop-overlay-pulse 1.4s ease-in-out infinite;
+}
+.drop-overlay-icon {
+  font-size: 48px;
+}
+.drop-overlay-text {
+  font-size: var(--fs-lg);
+  font-weight: 700;
+  max-width: 320px;
+  text-align: center;
+}
+@keyframes drop-overlay-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes drop-overlay-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.55; transform: scale(0.92); }
+}

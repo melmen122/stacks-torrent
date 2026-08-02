@@ -1,0 +1,51 @@
+.settings-section {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  padding: var(--space-5);
+  max-width: 560px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+.settings-section + .settings-section {
+  margin-top: var(--space-5);
+}
+.settings-section-title {
+  font-size: var(--fs-md);
+  font-weight: 700;
+}
+.settings-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+}
+.settings-row-text {
+  min-width: 0;
+}
+.settings-row-label {
+  font-size: var(--fs-xs);
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 2px;
+}
+.settings-row-value {
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+}
+.settings-status-ok {
+  color: var(--success);
+}
+.settings-status-warn {
+  color: var(--text-secondary);
+  font-weight: 500;
+}
+.settings-caption {
+  font-size: var(--fs-xs);
+  color: var(--text-tertiary);
+  line-height: 1.5;
+}

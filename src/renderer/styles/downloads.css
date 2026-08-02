@@ -1,0 +1,88 @@
+.magnet-form {
+  display: flex;
+  gap: var(--space-3);
+  margin-bottom: var(--space-5);
+  flex-wrap: wrap;
+}
+.magnet-form input {
+  flex: 1 1 320px;
+  height: 40px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: 0 var(--space-3);
+  color: var(--text-primary);
+}
+.magnet-form input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-muted-bg);
+}
+
+.torrent-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+.torrent-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  padding: var(--space-4);
+}
+.torrent-row.done {
+  border-color: rgba(79, 178, 134, 0.35);
+  background: linear-gradient(0deg, var(--success-bg), var(--success-bg)), var(--bg-elevated);
+}
+.torrent-row-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.torrent-name {
+  font-weight: 600;
+  font-size: var(--fs-sm);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.torrent-progress-track {
+  height: 6px;
+  border-radius: var(--radius-full);
+  background: var(--bg-elevated-2);
+  overflow: hidden;
+}
+.torrent-progress-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: var(--radius-full);
+  transition: width 400ms ease;
+}
+.torrent-row.done .torrent-progress-fill {
+  background: var(--success);
+}
+.torrent-meta {
+  display: flex;
+  gap: var(--space-3);
+  font-size: var(--fs-xs);
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+.torrent-done-label {
+  color: var(--success);
+  font-weight: 600;
+}
+.torrent-paused-label {
+  color: var(--text-secondary);
+  font-weight: 600;
+}
+.torrent-actions {
+  display: flex;
+  gap: var(--space-2);
+  flex-shrink: 0;
+}
