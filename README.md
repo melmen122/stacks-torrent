@@ -50,7 +50,58 @@ npm run dist:mac    # macOS DMG (run on macOS)
 npm run dist:win    # Windows NSIS installer (run on Windows)
 ```
 
-**Note on Windows builds:** `electron-builder` uses platform-native tools to create installers. Building for Windows on macOS requires Wine or WSL; it's recommended to run `npm run dist:win` directly on Windows. Refer to [electron-builder documentation](https://www.electron.build/multi-platform-build) for cross-platform build setup if needed.
+### Building on Windows
+
+Building on Windows is recommended over cross-building from macOS, since the app includes native modules that must compile for the target platform.
+
+**Prerequisites:**
+
+- **Node.js** 20 LTS ([nodejs.org](https://nodejs.org/))
+- **Git** ([git-scm.com](https://git-scm.com/))
+
+**Steps:**
+
+Clone the repository:
+
+```bash
+git clone https://github.com/melmen122/stacks-torrent.git
+```
+
+Enter the directory:
+
+```bash
+cd stacks-torrent
+```
+
+Install dependencies:
+
+```bash
+npm install
+```
+
+This takes a few minutes as native torrent modules compile. Yellow warnings are normal; errors indicate a problem.
+
+Build the installer:
+
+```bash
+npm run dist:win
+```
+
+**Output and Installation**
+
+The installer appears at `release\Audiobook Library-0.1.0-x64.exe`. Double-click to install.
+
+**SmartScreen Warning**
+
+Since the app is unsigned, Windows SmartScreen may warn on first run. Click **More info**, then **Run anyway** to proceed.
+
+**Data Storage**
+
+Audiobook Library stores its library, settings, downloads, and metadata at `%AppData%\Audiobook Library\`. The Windows library is independent from macOS (no cloud sync by design).
+
+**Cross-platform Builds**
+
+To build for Windows on macOS, see the [electron-builder multi-platform build guide](https://www.electron.build/multi-platform-build) for Wine or WSL setup.
 
 ### Standalone Launch
 
