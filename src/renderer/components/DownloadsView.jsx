@@ -57,6 +57,11 @@ export default function DownloadsView() {
         </button>
       </form>
 
+      <p className="downloads-safety-note">
+        Downloads are limited to audio files; executables and archives are skipped
+        automatically. Not a full antivirus.
+      </p>
+
       {torrents.length === 0 ? (
         <EmptyState variant="downloads" />
       ) : (

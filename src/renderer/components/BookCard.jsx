@@ -1,22 +1,33 @@
 import { useRef, useState } from 'react';
 import { useLibrary } from '../context/LibraryContext.jsx';
 import { usePlayer } from '../context/PlayerContext.jsx';
+import { useVirusTotal } from '../context/VirusTotalContext.jsx';
 import { formatDuration } from '../utils/format.js';
 import { mediaUrl } from '../utils/media.js';
 import { gradientFor, initialsFor } from '../utils/color.js';
 import { IconPlay, IconDots, IconCheck, IconClose } from './icons.jsx';
 import IconMenu from './IconMenu.jsx';
 import ConfirmDialog from './ConfirmDialog.jsx';
+import ScanBadge from './ScanBadge.jsx';
 
 export default function BookCard({ book, genres }) {
   const { setGenre, createGenre, removeBook } = useLibrary();
   const player = usePlayer();
+  const virusTotal = useVirusTotal();
   const [menuOpen, setMenuOpen] = useState(false);
   const [confirmingRemove, setConfirmingRemove] = useState(false);
   const menuButtonRef = useRef(null);
 
   const isCurrent = player.book?.id === book.id;
   const genre = genres.find((g) => g.id === book.genreId);
+
+  // The in-session override (from a just-received onScanComplete/scanBook
+  // call) always wins over the persisted `book.scan` until the next
+  // library refetch supersedes it — see VirusTotalContext for why.
+  const scan = virusTotal.scanOverrides[book.id] || book.scan || null;
+  const scanProgressInfo = virusTotal.progress[book.id];
+  const isInfected = scan?.state === 'done' && scan.verdict === 'infected';
+  const isScanning = scan?.state === 'scanning';
 
   const handlePlay = () => {
     if (isCurrent) player.togglePlay();
@@ -33,6 +44,9 @@ export default function BookCard({ book, genres }) {
 
   const rejectSuggestion = () => setGenre(book.id, book.genreId ?? null);
 
+  const hasVtKey = virusTotal.settings.hasKey;
+  const scanLabel = isScanning ? 'Scanning…' : scan?.state === 'done' ? 'Re-scan for viruses' : 'Scan for viruses';
+
   const menuItems = [
     { label: 'Uncategorized', active: !book.genreId, onClick: () => setGenre(book.id, null) },
     ...genres.map((g) => ({
@@ -41,11 +55,18 @@ export default function BookCard({ book, genres }) {
       onClick: () => setGenre(book.id, g.id),
     })),
     { separator: true },
+    {
+      label: hasVtKey ? scanLabel : 'Scan for viruses (add a VirusTotal key in Settings)',
+      disabled: !hasVtKey || isScanning,
+      hint: hasVtKey ? undefined : 'Add a free VirusTotal API key in Settings to enable virus scanning.',
+      onClick: () => virusTotal.scanBook(book.id),
+    },
+    { separator: true },
     { label: 'Remove from library', danger: true, onClick: () => setConfirmingRemove(true) },
   ];
 
   return (
-    <div className="book-card">
+    <div className={`book-card ${isInfected ? 'book-card-infected' : ''}`}>
       <div className="book-cover">
         {book.coverPath ? (
           <img src={mediaUrl(book.coverPath)} alt="" className="book-cover-img" />
@@ -110,6 +131,24 @@ export default function BookCard({ book, genres }) {
             {genre ? genre.name : 'Uncategorized'}
           </span>
         </div>
+
+        {scan && (
+          <div className="book-scan-row">
+            <ScanBadge scan={scan} progress={scanProgressInfo} />
+          </div>
+        )}
+
+        {isInfected && (
+          <div className="scan-alert" role="alert">
+            <span className="scan-alert-icon" aria-hidden="true">⛔</span>
+            <span className="scan-alert-text">
+              Infected file{scan.files?.length > 1 ? 's' : ''} detected by VirusTotal
+            </span>
+            <button type="button" className="scan-alert-remove" onClick={() => setConfirmingRemove(true)}>
+              Remove…
+            </button>
+          </div>
+        )}
       </div>
 
       {confirmingRemove && (

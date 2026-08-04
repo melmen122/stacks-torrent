@@ -18,12 +18,49 @@
 // with real, well-known info hashes. webtorrent 3.0.16 fixes this (verified
 // directly against its installed source) and its `add`/`remove`/`get`/
 // `pause`/`resume`/property surface used here is otherwise identical to 2.x.
+//
+// Pre-download safety check (docs/PLAN4.md): every torrent is added with
+// `{ deselect: true }` — verified directly against installed source
+// (lib/torrent.js `_onMetadata`) that this sets `_startAsDeselected = true`,
+// which skips webtorrent's normal "select the entire torrent" default
+// entirely; NOTHING is selected until we explicitly call `file.select()`.
+// Selection happens on the torrent's 'metadata' event (fires for BOTH local
+// .torrent-file adds and, critically, magnet URIs once peers deliver the
+// file list — verified this is the same `_onMetadata` codepath for both),
+// which itself fires *before* webtorrent opens its chunk store or begins
+// verifying/fetching any piece — so our synchronous classify-then-select
+// callback is guaranteed to run before any piece-fetching machinery for
+// this torrent exists. Only classified-audio files (and small selectable
+// cover images, docs/PLAN4B.md) ever get `.select()`ed; everything else
+// stays deselected for the torrent's whole lifetime, so its pieces are
+// never REQUESTED from peers.
+//
+// That is not the same as "never WRITTEN to disk": webtorrent's chunk store
+// writes each downloaded piece's bytes to EVERY file that piece overlaps,
+// selected or not — selection governs requesting, not writing. A piece
+// needed for a selected audio file can also overlap an adjacent deselected
+// file, and since an attacker controls both file order and piece length
+// when authoring a torrent, a small malicious file can be crafted to land
+// entirely within one such boundary piece and be written to disk IN FULL
+// the moment that piece completes — not just a harmless fragment. See
+// `cleanupSkippedFiles` (called both at classification time, for leftover
+// fragments from a prior session, AND again once audio download completes,
+// which is the call that actually matters) for how this is closed in
+// practice.
+//
+// IMPORTANT consequence: `torrent.done`/the torrent's own 'done' event
+// require *every* file (selected or not) to finish — verified in
+// `_checkDone` (`this.files.every(file => file.done)`) — so with
+// intentionally-deselected non-audio files, the built-in 'done' event would
+// simply never fire. Completion is instead tracked per selected audio
+// `File` object's own 'done' event (see `attachAudioCompletionTracking`).
 
 import path from 'node:path'
 import { promises as fs } from 'node:fs'
 import WebTorrent from 'webtorrent'
 import { scanBookFiles, isAudioFile } from './metadata.js'
 import { loadPersistedTorrents, savePersistedTorrents } from './torrentPersistence.js'
+import { classifyTorrentFiles } from './safetyCheck.js'
 
 const PROGRESS_INTERVAL_MS = 1000
 
@@ -39,8 +76,12 @@ const PROGRESS_INTERVAL_MS = 1000
  * @param {string} [deps.torrentFilesDir] - directory .torrent files get
  *   copied into on add, so re-adding after a restart doesn't depend on the
  *   original file (e.g. a Downloads-folder file) still existing.
+ * @param {(book: object) => void} [deps.onBookImported] - called once, right
+ *   after `handleDone` successfully adds a book to the library (docs/PLAN4B.md
+ *   "after handleDone imports a book, enqueue ... for scanning"). Optional —
+ *   wired by main.js to the VirusTotal scanner; a no-op if omitted.
  */
-export function createTorrentManager({ library, coversDir, getWindow, torrentsFilePath, torrentFilesDir }) {
+export function createTorrentManager({ library, coversDir, getWindow, torrentsFilePath, torrentFilesDir, onBookImported }) {
   const client = new WebTorrent({
     // No throttling exists anywhere in this app, and none may be added:
     // explicitly request unlimited download/upload rate (-1 is also
@@ -53,13 +94,31 @@ export function createTorrentManager({ library, coversDir, getWindow, torrentsFi
     maxConns: 100
   })
   let progressTimer = null
-  // Guards against attaching a 'done' listener to the same torrent instance
-  // more than once. webtorrent's own duplicate-add detection invokes our
-  // `ontorrent` callback with the *pre-existing* torrent object whenever a
-  // caller adds a magnet/torrent that's already active, so without this a
-  // second `add()` for the same torrent would stack a second 'done' handler
-  // and auto-import the same completed book twice.
-  const doneHandlerAttached = new WeakSet()
+  // Guards against classifying (and attaching audio-completion tracking to)
+  // the same torrent instance more than once. webtorrent's own duplicate-add
+  // detection invokes our `ontorrent` callback with the *pre-existing*
+  // torrent object whenever a caller adds a magnet/torrent that's already
+  // active, so without this a second `add()` for the same torrent could
+  // re-run classification and stack a second completion listener, double
+  // auto-importing the same completed book.
+  const classifiedTorrents = new WeakSet()
+  // Full classifyTorrentFiles() report per torrent (set once, on 'metadata').
+  // Used to build `summarize()`'s trimmed `safety` field and the full
+  // `torrents:safety-report` broadcast payload.
+  const safetyReports = new WeakMap()
+  // The selected (audio) webtorrent `File` objects per torrent, set once on
+  // 'metadata' (empty array before classification, or if hasAudio is
+  // false). `summarize()` uses this — NOT `torrent.progress`/`torrent.done`
+  // — to report progress/completion; see the module header comment for why:
+  // both of webtorrent's own torrent-level equivalents are computed against
+  // ALL files, selected or not, so with intentionally-deselected non-audio
+  // files they'd show a misleadingly low/stuck percentage and never reach
+  // done at all.
+  const audioFilesByTorrent = new WeakMap()
+  // Sentinel: added once every selected audio file has individually
+  // finished (see `attachAudioCompletionTracking`). This — not
+  // `torrent.done` — is what `summarize()` reports as `done`.
+  const audioDownloadComplete = new WeakSet()
   // Immutable-per-torrent bits of the persisted entry that can't be derived
   // from the live Torrent instance (its magnet/infoHash-or-copied-file
   // identity, the download dir it was originally added with, and when).
@@ -73,15 +132,35 @@ export function createTorrentManager({ library, coversDir, getWindow, torrentsFi
     console.error('[torrents] client error:', err?.message ?? err)
   })
 
+  /**
+   * Progress against the SELECTED audio files only, not `torrent.progress`
+   * (computed against the whole torrent's length, including deselected
+   * files) — see the `audioFilesByTorrent` comment above.
+   */
+  function computeAudioProgress(torrent) {
+    const audioFiles = audioFilesByTorrent.get(torrent)
+    if (!audioFiles || !audioFiles.length) return 0
+    const totalLength = audioFiles.reduce((sum, f) => sum + f.length, 0)
+    if (totalLength === 0) return 0
+    const downloaded = audioFiles.reduce((sum, f) => sum + f.downloaded, 0)
+    return downloaded / totalLength
+  }
+
   function summarize(torrent) {
+    const report = safetyReports.get(torrent)
     return {
       infoHash: torrent.infoHash,
       name: torrent.name,
-      progress: torrent.progress,
+      progress: computeAudioProgress(torrent),
       downloadSpeed: torrent.downloadSpeed,
       numPeers: torrent.numPeers,
-      done: torrent.done,
-      paused: !!torrent.paused
+      done: audioDownloadComplete.has(torrent),
+      paused: !!torrent.paused,
+      // null = metadata not yet arrived / still checking (renderer shows
+      // "checking…"). Trimmed shape per docs/PLAN4.md's exact contract.
+      safety: report
+        ? { verdict: report.verdict, hasAudio: report.hasAudio, skippedCount: report.skipped.length }
+        : null
     }
   }
 
@@ -111,10 +190,145 @@ export function createTorrentManager({ library, coversDir, getWindow, torrentsFi
     return client.torrents.find((t) => t.infoHash === infoHash) ?? null
   }
 
-  function ensureDoneHandler(torrent) {
-    if (doneHandlerAttached.has(torrent)) return
-    doneHandlerAttached.add(torrent)
-    torrent.on('done', () => handleDone(torrent))
+  function broadcastSafetyReport(torrent, report) {
+    const win = getWindow?.()
+    if (!win || win.isDestroyed()) return
+    win.webContents.send('torrents:safety-report', {
+      infoHash: torrent.infoHash,
+      name: torrent.name,
+      verdict: report.verdict,
+      hasAudio: report.hasAudio,
+      downloadedCount: report.audio.length,
+      skipped: report.skipped
+    })
+  }
+
+  /**
+   * Best-effort deletion of any skipped (non-audio, non-cover) file that
+   * nonetheless exists on disk. Selection governs what webtorrent
+   * REQUESTS from peers, not what it WRITES: a piece that overlaps both a
+   * selected audio file and an adjacent deselected file still gets fetched
+   * (because the audio file needs it) and the chunk store fans that piece's
+   * bytes out to EVERY file it overlaps, selected or not — so a skipped
+   * file sharing a boundary piece with a selected file WILL have bytes
+   * written to it. This is not bounded to "a few incidental bytes": the
+   * attacker controls both file order and piece length when authoring a
+   * torrent, so a small malicious file (e.g. a tiny .exe) can be crafted to
+   * land entirely within one such boundary piece and be written to disk
+   * IN FULL the moment that piece completes. Never touches the covers this
+   * torrent selected (docs/PLAN4B.md) — those are meant to be on disk.
+   *
+   * Called twice, deliberately: once at classification time (metadata) —
+   * mostly a no-op for a fresh add (nothing has been fetched yet), but it
+   * cleans up leftover fragments from a *previous* session on restore — and
+   * again once audio download completes (`attachAudioCompletionTracking`'s
+   * `finish`), which is the call that actually matters: only by then have
+   * any boundary-piece-driven writes to skipped files actually happened.
+   */
+  async function cleanupSkippedFiles(torrent, report) {
+    const coverNames = new Set((report.covers ?? []).map((f) => f.name))
+    await Promise.all(
+      report.skipped
+        .filter((entry) => !coverNames.has(entry.name))
+        .map(async (entry) => {
+          const filePath = path.join(torrent.path, entry.name)
+          await fs.unlink(filePath).catch(() => {})
+        })
+    )
+  }
+
+  /**
+   * Tracks completion of only the SELECTED audio files (see the module
+   * header comment for why `torrent.done`/'done' can't be used here: they
+   * require every file, selected or not, to finish). Once every audio
+   * `File` has individually emitted 'done' (or already was done, e.g.
+   * pre-existing verified local data on restore), marks
+   * `audioDownloadComplete` (what `summarize()` reports as `done`), re-runs
+   * `cleanupSkippedFiles` (this — not the metadata-time call — is what
+   * actually deletes any boundary-piece spill, since only by now has any
+   * fetching happened), and runs the same scan-and-import flow the old
+   * torrent-level 'done' handler used to. Cleanup and import are
+   * independent fire-and-forget calls, not sequenced: cleanup still runs
+   * even if `handleDone` (book import) fails.
+   */
+  function attachAudioCompletionTracking(torrent, audioFiles) {
+    if (!audioFiles.length) return
+    let remaining = audioFiles.length
+    const finish = () => {
+      audioDownloadComplete.add(torrent)
+      const report = safetyReports.get(torrent)
+      if (report) {
+        cleanupSkippedFiles(torrent, report).catch((err) => {
+          console.error('[torrents] failed to clean up skipped files after audio completion:', err)
+        })
+      }
+      handleDone(torrent)
+    }
+    const onOneDone = () => {
+      remaining -= 1
+      if (remaining <= 0) finish()
+    }
+    for (const file of audioFiles) {
+      if (file.done) {
+        remaining -= 1
+      } else {
+        file.once('done', onOneDone)
+      }
+    }
+    if (remaining <= 0) finish()
+  }
+
+  /**
+   * Runs once, on the torrent's 'metadata' event (file list known — see the
+   * module header comment for why this is the correct, leak-proof point for
+   * BOTH magnet and .torrent-file adds). Classifies the manifest, selects
+   * only audio files for download (everything else stays deselected for the
+   * torrent's whole lifetime), stores + broadcasts the safety report, and
+   * — only if there's audio to wait for — starts tracking its completion.
+   */
+  function classifyAndSelect(torrent) {
+    if (classifiedTorrents.has(torrent)) return
+    classifiedTorrents.add(torrent)
+
+    const manifest = torrent.files.map((f) => ({ name: f.path || f.name, length: f.length }))
+    const report = classifyTorrentFiles(manifest)
+    safetyReports.set(torrent, report)
+
+    const audioNames = new Set(report.audio.map((f) => f.name))
+    const audioFiles = torrent.files.filter((f) => audioNames.has(f.path || f.name))
+    // Set unconditionally (even if empty) so `computeAudioProgress` always
+    // has a definitive answer once classification has run, rather than
+    // falling through to any stale/undefined state.
+    audioFilesByTorrent.set(torrent, audioFiles)
+
+    if (report.hasAudio) {
+      for (const file of audioFiles) file.select()
+      attachAudioCompletionTracking(torrent, audioFiles)
+
+      // Also select small cover images (docs/PLAN4B.md). Still classified
+      // and reported as 'companion' in `report.skipped` (never audio, never
+      // imported as book content) — just additionally selected so
+      // `scanBookFiles`' external-cover fallback has something to find.
+      // Only done alongside real audio; a no-audio torrent selects nothing.
+      const coverNames = new Set((report.covers ?? []).map((f) => f.name))
+      if (coverNames.size) {
+        const coverFiles = torrent.files.filter((f) => coverNames.has(f.path || f.name))
+        for (const file of coverFiles) file.select()
+      }
+    }
+    // No-audio guard: select nothing (not even covers). The torrent has no
+    // selected pieces to ever fetch, so it correctly just sits at 0%
+    // forever (no 'done' will ever fire) until the user removes it —
+    // `summarize()`'s `safety.hasAudio: false` is what tells the renderer
+    // to show that state and offer removal; we deliberately do NOT
+    // auto-remove it here.
+
+    cleanupSkippedFiles(torrent, report).catch((err) => {
+      console.error('[torrents] failed to clean up skipped files:', err)
+    })
+
+    broadcastSafetyReport(torrent, report)
+    persistNow().catch(() => {})
   }
 
   // ---------------------------------------------------------------------
@@ -140,28 +354,44 @@ export function createTorrentManager({ library, coversDir, getWindow, torrentsFi
       //
       // `handleDone`'s metadata scan can also take real time (seconds, for
       // a multi-file audiobook); if the app quits while that scan is still
-      // in flight, `t.done` is already true but neither `meta.imported` nor
-      // `findBook` is true yet. Excluding on `t.done` alone would flush a
-      // torrents.json that has already forgotten this torrent, orphaning
-      // its downloaded files with no retry on next launch. Keeping it
-      // persisted instead means next startup re-adds it, webtorrent
-      // re-verifies the already-complete data on disk, 'done' fires again,
-      // and `handleDone` (already idempotent via its own findBook check)
-      // imports it — self-healing rather than silently losing the book.
+      // in flight, the audio download is already complete but neither
+      // `meta.imported` nor `findBook` is true yet. Excluding on completion
+      // alone would flush a torrents.json that has already forgotten this
+      // torrent, orphaning its downloaded files with no retry on next
+      // launch. Keeping it persisted instead means next startup re-adds it,
+      // webtorrent re-verifies the already-complete data on disk, audio
+      // completion fires again, and `handleDone` (already idempotent via
+      // its own findBook check) imports it — self-healing rather than
+      // silently losing the book.
+      //
+      // Uses `audioDownloadComplete` (set once every SELECTED audio file is
+      // done — see the module header comment), not `t.done`: webtorrent's
+      // own `torrent.done` requires *every* file, selected or not, to
+      // finish, so with any intentionally-deselected non-audio file (the
+      // normal case) it would never become true, and this filter would
+      // never exclude anything — permanently re-persisting (and re-adding
+      // on every future restart) a torrent that's already been imported.
       .filter((t) => {
         const meta = persistMeta.get(t)
         const imported = !!meta?.imported || !!library.findBook(`b${t.infoHash.slice(0, 16)}`)
-        return !(t.done && imported)
+        return !(audioDownloadComplete.has(t) && imported)
       })
       .map((t) => {
         const meta = persistMeta.get(t)
+        const report = safetyReports.get(t)
         return {
           magnetOrInfoHash: meta?.magnetOrInfoHash ?? t.infoHash,
           torrentFileCopyPath: meta?.torrentFileCopyPath ?? null,
           downloadDir: meta?.downloadDir ?? t.path,
           paused: !!t.paused,
           addedAt: meta?.addedAt ?? Date.now(),
-          imported: !!meta?.imported
+          imported: !!meta?.imported,
+          // Display-only convenience for an instant badge on next restore
+          // (see `addInternal`'s `persistOverride?.safety` pre-population) —
+          // re-classification on 'metadata' is always the source of truth.
+          safety: report
+            ? { verdict: report.verdict, hasAudio: report.hasAudio, skippedCount: report.skipped.length }
+            : null
         }
       })
     try {
@@ -218,15 +448,23 @@ export function createTorrentManager({ library, coversDir, getWindow, torrentsFi
       if (!audioFiles.length) return
 
       const filePaths = audioFiles.map((f) => path.join(torrent.path, f.path))
-      const coverCandidates = torrent.files
-        .filter((f) => !isAudioFile(f.name))
-        .map((f) => path.join(torrent.path, f.path))
+      // Restricted to the safety report's `covers` list — the small
+      // image-extension files actually selected for download (docs/PLAN4B.md)
+      // — rather than every non-audio file in the manifest. Anything else
+      // (.exe, .dmg, archives, ...) was never selected/downloaded under
+      // audio-only mode, so it wouldn't exist on disk to use as a cover
+      // candidate anyway; restricting the candidate list itself is
+      // defense-in-depth against ever handing a risky file path to the
+      // cover extractor, independent of that.
+      const report = safetyReports.get(torrent)
+      const coverCandidates = (report?.covers ?? []).map((f) => path.join(torrent.path, f.name))
 
       const bookId = `b${torrent.infoHash.slice(0, 16)}`
       // Guards against re-importing the same torrent's book a second time —
       // e.g. if a user re-adds a magnet that already finished downloading in
-      // a previous session, or 'done' otherwise fires more than once for the
-      // same torrent (defense in depth alongside `ensureDoneHandler`).
+      // a previous session, or audio-completion otherwise fires more than
+      // once for the same torrent (defense in depth alongside
+      // `attachAudioCompletionTracking`'s own per-torrent bookkeeping).
       if (library.findBook(bookId)) return
       const scanned = await scanBookFiles(filePaths, {
         bookId,
@@ -274,6 +512,15 @@ export function createTorrentManager({ library, coversDir, getWindow, torrentsFi
         })
         win.webContents.send('library:changed')
       }
+
+      // docs/PLAN4B.md: enqueue for a VirusTotal scan (no-op if the caller
+      // didn't wire this up, or if scanning is disabled — that check lives
+      // entirely on the other side of this callback).
+      try {
+        onBookImported?.(book)
+      } catch (err) {
+        console.error('[torrents] onBookImported callback threw:', err)
+      }
     } catch (err) {
       console.error('[torrents] failed to auto-import completed torrent:', err)
     } finally {
@@ -316,13 +563,35 @@ export function createTorrentManager({ library, coversDir, getWindow, torrentsFi
 
       let torrent
       try {
-        torrent = client.add(idForClient, { path: downloadDir, paused }, (readyTorrent) => {
-          ensureDoneHandler(readyTorrent)
+        // `deselect: true` — see the module header comment: this prevents
+        // webtorrent's normal "select the entire torrent" default from ever
+        // running, so nothing downloads until `classifyAndSelect` (below,
+        // on 'metadata') explicitly selects the audio files.
+        torrent = client.add(idForClient, { path: downloadDir, paused, deselect: true }, (readyTorrent) => {
           settleResolve(readyTorrent)
         })
       } catch (err) {
         reject(err)
         return
+      }
+
+      // Pre-populate the trimmed safety summary from a restored entry (if
+      // any) immediately, synchronously — so `summarize()` can show the
+      // last-known badge right away instead of "checking…" while waiting
+      // for 'metadata' to re-arrive. Real classification (below) always
+      // overwrites this once it runs; this is a display-only convenience,
+      // never the source of truth (docs/PLAN4.md).
+      if (persistOverride?.safety) {
+        safetyReports.set(torrent, {
+          verdict: persistOverride.safety.verdict,
+          hasAudio: persistOverride.safety.hasAudio,
+          audio: [],
+          // Only `.length` is ever read off this placeholder (via
+          // `summarize()`'s `safety.skippedCount`) before real
+          // classification overwrites the whole entry — a sparse array of
+          // the right length is enough, no need for real entries.
+          skipped: new Array(persistOverride.safety.skippedCount || 0)
+        })
       }
 
       // Started unconditionally (not just once a torrent reaches 'ready') so
@@ -342,6 +611,12 @@ export function createTorrentManager({ library, coversDir, getWindow, torrentsFi
         })
         settleResolve(torrent)
       })
+      // Fires once the file list is known — for a magnet URI this arrives
+      // later, from peers, well after 'infoHash'/`add()`'s own resolution;
+      // for a .torrent file it's available (near-)immediately. Either way,
+      // this is the single place classification + selective download
+      // happens (see module header comment + `classifyAndSelect`).
+      torrent.once('metadata', () => classifyAndSelect(torrent))
       // Duplicate case: webtorrent destroys `torrent` before its own public
       // 'infoHash' event fires — and because we've attached an 'error'
       // listener below, that destroy path synchronously *emits* an error on
@@ -368,7 +643,7 @@ export function createTorrentManager({ library, coversDir, getWindow, torrentsFi
    * otherwise hang this promise (and the renderer's `torrentsAdd` call)
    * forever.
    *
-   * @returns {Promise<{infoHash:string, name:string, progress:number, downloadSpeed:number, numPeers:number, done:boolean, paused:boolean}>}
+   * @returns {Promise<{infoHash:string, name:string, progress:number, downloadSpeed:number, numPeers:number, done:boolean, paused:boolean, safety:{verdict:string,hasAudio:boolean,skippedCount:number}|null}>}
    */
   function add(magnetOrTorrentPath, downloadDir) {
     return addInternal(magnetOrTorrentPath, downloadDir)
@@ -454,5 +729,23 @@ export function createTorrentManager({ library, coversDir, getWindow, torrentsFi
     return new Promise((resolve) => client.destroy(() => resolve()))
   }
 
-  return { add, list, pause, resume, remove, destroy, restorePersisted }
+  return {
+    add,
+    list,
+    pause,
+    resume,
+    remove,
+    destroy,
+    restorePersisted,
+    // Test-only, deliberately namespaced — never referenced by main.js.
+    // Exists so the classify -> select -> cleanup -> completion flow
+    // (docs/PLAN4.md/PLAN4B.md) can have automated coverage
+    // (tests/torrents.completion.test.js) against a REAL webtorrent client
+    // without needing actual peer-to-peer data transfer (audio completion
+    // is simulated by directly marking a File object done and firing its
+    // 'done' event, exactly matching real webtorrent's own `_checkDone()`
+    // once a file's pieces verify — see that test file for why this is a
+    // faithful simulation, not a shortcut around the real code path).
+    __TEST_ONLY: { getClient: () => client, getSafetyReports: () => safetyReports }
+  }
 }

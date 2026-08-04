@@ -18,6 +18,10 @@
   border-color: var(--border-strong);
   box-shadow: var(--shadow-md);
 }
+.book-card-infected {
+  border-color: rgba(226, 106, 106, 0.5);
+  box-shadow: 0 0 0 1px rgba(226, 106, 106, 0.25);
+}
 
 .book-cover {
   position: relative;

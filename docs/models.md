@@ -37,6 +37,18 @@ interface Book {
     fileIndex: number;     // Index in the files array
     seconds: number;       // Elapsed time in current file
   };
+  scan?: {                 // VirusTotal scan state (optional; absent or null = unscanned)
+    state: 'unscanned' | 'scanning' | 'done' | 'error';
+    verdict: 'clean' | 'suspicious' | 'infected' | 'unknown' | null;
+    scannedAt: number | null;    // Unix timestamp (milliseconds) when scan completed
+    files: [{
+      name: string;               // Audio file name
+      sha256: string;             // File hash
+      verdict: 'clean' | 'suspicious' | 'infected' | 'unknown' | null;
+      malicious: number | null;   // Count of engines flagging as malicious
+      suspicious: number | null   // Count of engines flagging as suspicious
+    }]
+  }
 }
 ```
 
@@ -121,9 +133,16 @@ Application configuration persisted to `settings.json` in the user data director
 
 ```typescript
 interface Settings {
-  downloadDir: string;  // Absolute path where torrents download (default: userData/downloads)
+  downloadDir: string;      // Absolute path where torrents download (default: userData/downloads)
+  virusTotalApiKey?: string | null;  // VirusTotal API key (optional; null = disabled)
+  virusTotalEnabled?: boolean;       // Whether VirusTotal scanning is enabled (default: false)
 }
 ```
+
+**VirusTotal API Key Handling:**
+- The API key is stored in plaintext in `settings.json` on disk (acceptable for a personal local app).
+- The key is NEVER logged, never sent to the renderer process, and never included in error messages.
+- Setting the key to `null` disables VirusTotal scanning.
 
 ## Playback Resume
 
@@ -133,13 +152,35 @@ If a book is removed from the library while it's playing, playback stops and pos
 
 ---
 
+## VirusTotal Cache
+
+Hash lookups are cached locally to avoid repeated API calls.
+
+```typescript
+interface VirusTotalCacheEntry {
+  verdict: 'clean' | 'suspicious' | 'infected' | 'unknown';
+  malicious?: number;     // Count of engines flagging as malicious (when known)
+  suspicious?: number;    // Count of engines flagging as suspicious (when known)
+  checkedAt: number;      // Unix timestamp (milliseconds) when hash was looked up
+}
+
+// Stored as userData/vt-cache.json:
+{
+  "[sha256-hex]": { verdict, malicious, suspicious, checkedAt },
+  // ... one entry per scanned file
+}
+```
+
+**Cache TTL:** Entries are re-checked after 30 days to catch new detections. Unknown verdicts are rechecked sooner.
+
 ## File Organization
 
 ```
 userData/
   library.json          # Books and genres (JSON)
-  settings.json         # User settings
+  settings.json         # User settings (download dir, VirusTotal API key)
   torrents.json         # Persisted torrent list (re-added on startup)
+  vt-cache.json         # VirusTotal hash cache (sha256 → verdict, TTL 30d)
   covers/               # Extracted cover images
     b1f2e3d4...jpg
     b5c6a7b8...png

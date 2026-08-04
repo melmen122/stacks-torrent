@@ -19,6 +19,14 @@
   box-shadow: 0 0 0 3px var(--accent-muted-bg);
 }
 
+.downloads-safety-note {
+  font-size: var(--fs-xs);
+  color: var(--text-tertiary);
+  line-height: 1.5;
+  margin-bottom: var(--space-5);
+  max-width: 640px;
+}
+
 .torrent-list {
   display: flex;
   flex-direction: column;
@@ -37,12 +45,31 @@
   border-color: rgba(79, 178, 134, 0.35);
   background: linear-gradient(0deg, var(--success-bg), var(--success-bg)), var(--bg-elevated);
 }
+.torrent-row.no-audio {
+  border-color: var(--border-strong);
+  background: linear-gradient(0deg, var(--bg-hover), var(--bg-hover)), var(--bg-elevated);
+}
+.torrent-row.no-audio-danger {
+  border-color: rgba(226, 106, 106, 0.4);
+  background: linear-gradient(0deg, var(--danger-bg), var(--danger-bg)), var(--bg-elevated);
+}
 .torrent-row-main {
   flex: 1;
   min-width: 0;
   display: flex;
   flex-direction: column;
   gap: 6px;
+}
+.torrent-no-audio-message {
+  font-size: var(--fs-xs);
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+.no-audio-danger .torrent-no-audio-message {
+  color: var(--danger);
+}
+.torrent-safety-row {
+  display: flex;
 }
 .torrent-name {
   font-weight: 600;

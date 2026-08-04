@@ -1,0 +1,98 @@
+/* VirusTotal scan badge (BookCard) + the persistent infected-file alert. */
+
+.book-scan-row {
+  display: flex;
+}
+
+.scan-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 3px 8px 3px 7px;
+  border-radius: var(--radius-full);
+  white-space: nowrap;
+}
+
+.scan-badge-scanning {
+  color: var(--text-tertiary);
+  background: var(--bg-elevated-2);
+}
+.scan-badge-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-tertiary);
+  animation: scan-dot-pulse 1.4s ease-in-out infinite;
+}
+@keyframes scan-dot-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
+.scan-badge-clean {
+  color: var(--success);
+  background: var(--success-bg);
+}
+
+/* Deliberately NOT green/success-colored and NOT danger-colored — "unknown"
+   is neither a clean bill of health nor a threat signal, just an absence
+   of data, and must never visually read as either. */
+.scan-badge-unknown {
+  color: var(--text-secondary);
+  background: var(--bg-hover);
+}
+
+.scan-badge-suspicious {
+  color: #e8b23f;
+  background: rgba(232, 178, 63, 0.14);
+}
+
+.scan-badge-infected {
+  color: var(--danger);
+  background: var(--danger-bg);
+  font-weight: 700;
+}
+
+.scan-badge-error {
+  color: var(--text-tertiary);
+  background: var(--bg-elevated-2);
+}
+
+/* Persistent infected-file alert — not hover-gated, not dismissible; only
+   goes away when the book is removed or a re-scan changes the verdict. */
+.scan-alert {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-top: 2px;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--danger-bg);
+  border: 1px solid rgba(226, 106, 106, 0.4);
+}
+.scan-alert-icon {
+  flex-shrink: 0;
+}
+.scan-alert-text {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  color: var(--danger);
+  line-height: 1.4;
+}
+.scan-alert-remove {
+  flex-shrink: 0;
+  background: none;
+  border: none;
+  color: var(--danger);
+  font-size: var(--fs-xs);
+  font-weight: 700;
+  text-decoration: underline;
+  padding: 0;
+}
+.scan-alert-remove:hover {
+  color: var(--danger-hover);
+}

@@ -63,15 +63,55 @@ Shadows: `--shadow-sm/md/lg` — cards use `md` on hover, dialogs/player bar use
 - **BookCard** — square cover (art or gradient+initials placeholder), hover play overlay
   (▶/⏸ depending on whether it's the active book), suggestion pill
   (`Suggested: <genre> ✓ ✕`) when `book.suggestedGenre` is set, title/author, duration,
-  genre chip, `⋯` menu (assign genre — with a checkmark on the active one — or remove from
-  library via `ConfirmDialog` with an "also delete files" checkbox).
+  genre chip, a `ScanBadge` when a VirusTotal scan result exists for the book, `⋯` menu
+  (assign genre — with a checkmark on the active one — "Scan for viruses"/"Re-scan for
+  viruses" gated on a VirusTotal key being set (see below) — or remove from library via
+  `ConfirmDialog` with an "also delete files" checkbox). A book whose scan verdict is
+  `infected` gets a persistent red-tinted card border (`.book-card-infected`, not just a
+  hover state) plus an always-visible (not dismissible) alert bar — "⛔ Infected file(s)
+  detected by VirusTotal" — with its own "Remove…" link that opens the same
+  `ConfirmDialog`/delete-files flow as the menu's remove action. Nothing is ever
+  auto-deleted.
+- **ScanBadge** — small pill reflecting a book's VirusTotal scan (`book.scan`, optionally
+  overridden by a fresher in-session result — see Interaction patterns): a pulsing dot +
+  "Scanning… (done/total)" while active, green "✓ Clean", amber "⚠ Suspicious", red "⛔
+  Infected" (bold), and — this is the one that matters most — a **neutral gray** "? Unknown
+  to VirusTotal" for files VT has no record of. `unknown` deliberately shares no styling
+  with `clean`: same treatment as a muted/neutral badge, with a title tooltip spelling out
+  that it is *not* a safety signal either way. Renders nothing at all when there's no scan
+  data yet (VT is opt-in and off by default, so most books simply show no badge until the
+  user enables it and a scan actually runs).
 - **LibraryView** — combines Toolbar + grid, computes filtered/sorted book list, and picks the
   right `EmptyState` variant (no books at all vs. no search results).
-- **DownloadsView** — magnet-link form (input + Add + "Open .torrent file…") and a list of
-  `TorrentRow`s.
+- **DownloadsView** — magnet-link form (input + Add + "Open .torrent file…"), a small
+  unobtrusive safety-scope caption ("Downloads are limited to audio files; executables and
+  archives are skipped automatically. Not a full antivirus."), and a list of `TorrentRow`s.
 - **TorrentRow** — name, progress bar, %, speed, peers, pause/resume (hidden once done),
-  remove (with delete-files confirm). Completed torrents get a green-tinted border and a
-  "Completed" label instead of live stats.
+  remove (with delete-files confirm), and a `SafetyBadge` when the backend reports
+  `torrent.safety`. Completed torrents get a green-tinted border and a "Completed" label
+  instead of live stats. A torrent whose safety check found no audio (`hasAudio: false`)
+  swaps its progress bar/stats for a persistent message — "No audio found — nothing
+  downloaded. This may not be an audiobook." — and hides pause/resume (nothing to
+  pause/resume at 0%), leaving only Remove; the row gets a stronger red-tinted
+  border/background if the verdict was `danger` (vs. a neutral muted tint otherwise).
+- **SafetyBadge** — small pill next to a torrent's stats reflecting `torrent.safety` from
+  `torrents:list` (`{ verdict, hasAudio, skippedCount } | null`): a pulsing gray dot +
+  "Checking…" while `null` (metadata still pending), green "✓ Audio only" for `clean`, amber
+  "⚠ Caution" for `caution`, red "⛔ Blocked risky file" for `danger`. Static (non-interactive)
+  when nothing was skipped; becomes a clickable button with a skipped-file count bubble when
+  `skippedCount > 0`, opening `SafetyDetails`. Only rendered at all once the field exists on
+  the torrent object (`'safety' in torrent`), so it's simply absent — never stuck "Checking…"
+  forever — against a backend that doesn't support the feature yet.
+- **SafetyDetails** — read-only popover (click the safety badge) listing the files a
+  torrent's safety check skipped: name, a category chip (companion/archive/
+  executable/disguised/other, color-coded by severity), and the human-readable reason.
+  Portaled to `document.body` with the same fixed-position/flip-upward/player-bar-aware/
+  viewport-clamped pattern as `IconMenu` (deliberately a separate implementation — see its
+  file comment for why). Per-file detail only ever arrives via the `onSafetyReport` event
+  (`torrents:list` only carries the summary counts), so if a torrent has a nonzero
+  `skippedCount` but no event has fired yet this session (e.g. right after app start before
+  the backend re-broadcasts on restore), it shows "Details aren't available for this
+  session — re-add the torrent to see specifics." rather than an empty/broken list.
 - **PlayerBar** — persistent bottom bar: cover thumb, title/author (+ "File x of y" for
   multi-file books), prev/±30s/play-pause/±30s/next transport, seek bar with elapsed/total
   time, a chapters button, volume slider, close button. Only mounted while a book is loaded.
@@ -98,7 +138,7 @@ Shadows: `--shadow-sm/md/lg` — cards use `md` on hover, dialogs/player bar use
   drifting off its anchor).
 - **ConfirmDialog** — generic modal: title, message, optional labeled checkbox (used for
   "also delete files"), Cancel + Confirm (primary or danger).
-- **SettingsView** — sidebar nav entry below Downloads (gear icon). Two section cards:
+- **SettingsView** — sidebar nav entry below Downloads (gear icon). Three section cards:
   - "Downloads": current download folder (from `settingsGet`), a "Change…" button
     (`settingsChooseDownloadDir` — a native folder picker; canceling returns `null` and shows
     no toast, picking a folder shows a success toast and refreshes the displayed value), and
@@ -111,6 +151,17 @@ Shadows: `--shadow-sm/md/lg` — cards use `md` on hover, dialogs/player bar use
     hasn't confirmed it yet, or an error toast on failure. Caption notes the macOS
     confirmation prompt and that another client (e.g. uTorrent) may need to be changed in its
     own settings too.
+  - "Virus scanning (VirusTotal)": status line ("Key saved ✓ — scanning enabled" / "Key
+    saved, scanning is off" / "No key set — scanning disabled"), a `type="password"` key
+    input that is **never** pre-filled or echoed back (the backend only ever returns
+    `hasKey: boolean`, never the key itself) plus Save/"Clear key" (the clear button only
+    appears once a key is saved), and two honest captions: plain-text guidance to get a free
+    key at virustotal.com (text only — the app never auto-opens external links) and a
+    disclosure that scans run *after* download using file hashes only (never file contents),
+    this is the one feature that contacts an external service, the free tier is
+    rate-limited so large libraries scan slowly in the background, an "unknown" result is
+    explicitly **not** the same as "clean", this complements rather than replaces the OS's
+    antivirus, and the key itself is stored locally in plain text.
 - **DropImportOverlay** — invisible until a file drag enters the window; then shows a
   full-window dashed-border overlay ("Drop audiobooks to import"). On drop, resolves each
   dropped `File` to an absolute path via `getPathForFile` and calls `libraryImportPaths`.
@@ -191,6 +242,34 @@ Shadows: `--shadow-sm/md/lg` — cards use `md` on hover, dialogs/player bar use
   app, `MagnetNavigator` doesn't touch the torrent (main already added it) — it only flips
   the active view to Downloads and shows a toast, so the user always lands where the new
   download is visible instead of wondering whether anything happened.
+- **Safety-report toasts scale with severity, not with noise**: on `onSafetyReport`,
+  `danger` gets a prominent, longer-lived (9s) error toast naming the worst offending file
+  ("⛔ Blocked a suspicious file in "<name>": <file> — downloaded audio only."); `caution`
+  gets a shorter (6s) subtle info toast with just a count ("⚠ Skipped N non-audio files in
+  "<name>"."); `clean` gets **no toast at all**, even though `skippedCount` can still be > 0
+  (benign companion files — cover art, `.nfo`, subtitles — are always skipped silently and
+  never counted toward these messages, only archives/executables/disguised/unrecognized
+  files are "noteworthy"). If no audio was found in the torrent at all, both toast variants
+  append "No audio was found — nothing was downloaded." instead of "Downloaded audio only."
+  so the toast alone conveys the outcome even before the user looks at the row.
+- **VirusTotal (`VirusTotalContext`): "unknown" is never good news, quiet progress, loud
+  infection**. On `onScanComplete`, only `infected` (12s error toast, naming the worst file
+  when known) and `suspicious` (7s info toast) produce a toast; `clean` **and** `unknown`
+  both stay silent — an `unknown` result is not reassuring (VT simply has no record of the
+  file) and must never be communicated the way a "clean" result would be, including through
+  toast presence/absence. `onScanProgress` never toasts at all (badge-only, see `ScanBadge`
+  above) to avoid spamming a large library scanning slowly in the background under the free
+  tier's rate limit. An infected book's toast intentionally does **not** embed a "Remove"
+  button — `ToastStack` stays a simple message+dismiss surface; the actual remove action
+  lives as a persistent, always-visible control on the book's card (see `BookCard`), which
+  doesn't disappear the way a toast does. `VirusTotalContext` keeps an in-session
+  `scanOverrides` cache (bookId -> latest result) exactly like `TorrentsContext`'s
+  `safetyReports` / `PlayerContext`'s position cache, so the badge/alert update immediately
+  on `onScanComplete` without waiting on a full library refetch.
+- **Never imply VirusTotal runs before or during download**: every honest-disclosure surface
+  (Settings caption, this file) states scanning happens strictly *after* a book finishes
+  downloading, using hashes of files already on disk — VT is structurally incapable of
+  seeing anything earlier, since hash identity requires complete file content.
 
 ## Naming conventions
 - Components: PascalCase files under `components/`, one component per file.
@@ -220,3 +299,37 @@ Shadows: `--shadow-sm/md/lg` — cards use `md` on hover, dialogs/player bar use
 - The "Default magnet handler" UI lives in its own "Magnet links" settings-section card
   (rather than as a second row inside "Downloads") since it's conceptually an OS-integration
   setting, not a download setting — still directly below the Downloads card as specified.
+- Coded against `torrent.safety: { verdict, hasAudio, skippedCount } | null` (on
+  `torrents:list`/`torrents:progress` items) and `onSafetyReport(cb)` (event payload
+  `{ infoHash, name, verdict, hasAudio, downloadedCount, skipped }`) per docs/PLAN4.md ahead
+  of the backend landing them. `SafetyBadge` is gated on `'safety' in torrent` rather than
+  truthiness, so it's simply not rendered at all (not stuck "Checking…") until a backend that
+  sets the field — even as `null` — is running; `onSafetyReport` is optional-chained the same
+  way as every other event subscription.
+- Per-file skip detail (name/category/reason) is only ever delivered via the `onSafetyReport`
+  event, never via `torrents:list` (which only has the `skippedCount` summary) — so
+  `TorrentsContext` caches the last report per `infoHash` in memory for `SafetyDetails` to
+  read. If a torrent has `skippedCount > 0` but the app hasn't received an event for it this
+  session (e.g. right after startup, before any restore-time re-broadcast), the details
+  popover shows a "re-add to see specifics" fallback rather than fabricating data.
+- Coded against `virusTotalGetSettings()` -> `{enabled, hasKey}`, `virusTotalSetKey(key)` ->
+  `{ok, valid, reason}`, `virusTotalScanBook(bookId)` -> `{queued}`, `onScanProgress(cb)` ->
+  `{bookId, done, total}`, `onScanComplete(cb)` -> `{bookId, verdict, infectedFiles}`, and
+  `book.scan` per docs/PLAN4B.md, ahead of the backend landing them (same optional-chaining
+  pattern as every other not-yet-shipped IPC surface in this app). Two call sites interpret
+  the contract where it wasn't fully spelled out: (1) `setKey`'s `{ok, valid, reason}` is
+  treated as "saved" only when both `ok` and `valid` are true — any other combination shows
+  `reason` (or a fallback message) as an error toast and leaves the key field populated so
+  the user can correct it; (2) since `onScanComplete`'s payload has no book title (only
+  `bookId`), `VirusTotalContext` resolves the title by looking the id up in
+  `LibraryContext`'s `books` for the toast copy.
+- The infected-file toast intentionally does not embed an inline "remove" action (see
+  Interaction patterns) — `ToastStack`/`ToastContext` weren't extended to support action
+  buttons for this. If a future feature needs that, it's a deliberate, separate change to
+  the shared toast primitive rather than a one-off for this feature.
+- No "reveal in file manager" action was implemented for infected files — PLAN4B mentions it
+  as a possible action, but the IPC contract provided for this pass only covers
+  `virusTotalGetSettings`/`setKey`/`scanBook`/`onScanProgress`/`onScanComplete`, with no
+  reveal-in-file-manager method. "Remove book" (reusing the existing delete-files-aware
+  confirm flow) is implemented; flag if a reveal action should be added once/if a
+  corresponding IPC method exists.

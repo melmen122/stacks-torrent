@@ -15,7 +15,9 @@ const ANCHOR_GAP = 4; // gap between the trigger and the menu
  * scroll containment, which silently clipped the menu whenever it grew
  * past the card. Portaling escapes all of that.
  *
- * items: [{ label, onClick, danger?, active?, separator? }]
+ * items: [{ label, onClick, danger?, active?, disabled?, hint?, separator? }]
+ * `hint` (optional) renders as a native title tooltip, useful for
+ * explaining *why* a disabled item is disabled (e.g. "Add a key in Settings").
  * anchorRef: ref to the trigger element the menu should hang off of.
  */
 export default function IconMenu({ items, onClose, anchorRef, align = 'right' }) {
@@ -104,8 +106,14 @@ export default function IconMenu({ items, onClose, anchorRef, align = 'right' })
             key={i}
             type="button"
             role="menuitem"
+            title={item.hint}
+            disabled={item.disabled}
             className={`icon-menu-item ${item.danger ? 'danger' : ''} ${item.active ? 'active' : ''}`}
-            onClick={() => { item.onClick(); onClose(); }}
+            onClick={() => {
+              if (item.disabled) return;
+              item.onClick();
+              onClose();
+            }}
           >
             <span className="icon-menu-check">{item.active ? <IconCheck /> : null}</span>
             {item.label}

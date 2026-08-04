@@ -17,6 +17,8 @@ import { groupImportPaths } from './lib/importGrouping.js'
 import { parseRange } from './lib/mediaRange.js'
 import { resolveMediaAccess } from './lib/mediaGate.js'
 import { isMagnetUri, parseMagnetFromArgv } from './lib/magnetLink.js'
+import { validateApiKey } from './lib/virusTotal.js'
+import { createVirusTotalScanner } from './lib/virusTotalScanner.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -85,6 +87,7 @@ let mainWindow = null
 let library = null
 let torrentManager = null
 let settingsCache = null
+let virusTotalScanner = null
 
 let userDataDir = ''
 let libraryFilePath = ''
@@ -93,6 +96,7 @@ let settingsFilePath = ''
 let defaultDownloadDir = ''
 let torrentsFilePath = ''
 let torrentFilesDir = ''
+let vtCacheFilePath = ''
 
 function getWindow() {
   return mainWindow
@@ -108,14 +112,20 @@ function broadcastLibraryChanged() {
 // Settings (userData/settings.json)
 // ---------------------------------------------------------------------------
 
+// docs/PLAN4B.md: disabled by default, enabled only once a valid key is set
+// (see `virusTotal:setKey`). Never logged, never sent to the renderer as
+// itself — only `hasKey`/`enabled` booleans ever cross the IPC boundary
+// (see `virusTotal:getSettings`).
+const DEFAULT_SETTINGS = { virusTotalEnabled: false, virusTotalApiKey: null }
+
 async function loadSettings() {
   try {
     const raw = await fs.readFile(settingsFilePath, 'utf-8')
     const parsed = JSON.parse(raw)
-    settingsCache = { downloadDir: defaultDownloadDir, ...parsed }
+    settingsCache = { downloadDir: defaultDownloadDir, ...DEFAULT_SETTINGS, ...parsed }
   } catch (err) {
     if (err.code !== 'ENOENT') console.error('[settings] failed to read settings.json:', err)
-    settingsCache = { downloadDir: defaultDownloadDir }
+    settingsCache = { downloadDir: defaultDownloadDir, ...DEFAULT_SETTINGS }
   }
   return settingsCache
 }
@@ -127,6 +137,17 @@ async function saveSettings(patch) {
   await fs.writeFile(tmpPath, JSON.stringify(settingsCache, null, 2), 'utf-8')
   await fs.rename(tmpPath, settingsFilePath)
   return settingsCache
+}
+
+/**
+ * Every settings object handed back to the renderer over IPC MUST go
+ * through this first — `virusTotalApiKey` (docs/PLAN4B.md) is never
+ * readable by the renderer through any channel except the dedicated
+ * `virusTotal:getSettings` (booleans only, never the key itself).
+ */
+function stripSecretSettings(settings) {
+  const { virusTotalApiKey, ...safeSettings } = settings ?? {}
+  return safeSettings
 }
 
 // ---------------------------------------------------------------------------
@@ -551,8 +572,22 @@ function registerIpcHandlers() {
     library.savePosition(bookId, fileIndex, seconds)
   )
 
-  ipcMain.handle('settings:get', async () => settingsCache ?? loadSettings())
-  ipcMain.handle('settings:set', async (event, patch) => saveSettings(patch))
+  ipcMain.handle('settings:get', async () => {
+    // This is the generic, pre-existing (docs/PLAN2.md) settings channel —
+    // must never be a path the key reaches the renderer through; only
+    // `virusTotal:getSettings` (booleans only) is.
+    const settings = settingsCache ?? (await loadSettings())
+    return stripSecretSettings(settings)
+  })
+  ipcMain.handle('settings:set', async (event, patch) => {
+    // Defense in depth: the generic settings patch channel must never be a
+    // side-door to set/clear the VirusTotal key or flip `virusTotalEnabled`
+    // without going through `virusTotal:setKey`'s validation — strip both
+    // before applying, regardless of what the caller sent.
+    const { virusTotalApiKey, virusTotalEnabled, ...safePatch } = patch ?? {}
+    const settings = await saveSettings(safePatch)
+    return stripSecretSettings(settings)
+  })
 
   ipcMain.handle('settings:chooseDownloadDir', async () => {
     const win = getWindow()
@@ -569,7 +604,8 @@ function registerIpcHandlers() {
     // Only affects new torrents going forward — existing ones keep the
     // downloadDir they were originally added with (persisted per-torrent in
     // torrents.json), unaffected by this change.
-    return saveSettings({ downloadDir: chosenDir })
+    const settings = await saveSettings({ downloadDir: chosenDir })
+    return stripSecretSettings(settings)
   })
 
   ipcMain.handle('system:setDefaultMagnetHandler', async () => {
@@ -585,6 +621,43 @@ function registerIpcHandlers() {
   // `{magnet, error}`) for the oldest not-yet-pulled magnet, clearing it in
   // the same call, or `null` if there's nothing pending.
   ipcMain.handle('system:consumePendingMagnet', async () => consumePendingMagnet())
+
+  // docs/PLAN4B.md — the API key itself NEVER crosses this boundary in
+  // either direction beyond `setKey`'s own input argument; `getSettings`
+  // only ever returns booleans.
+  ipcMain.handle('virusTotal:getSettings', async () => {
+    const settings = settingsCache ?? (await loadSettings())
+    return {
+      enabled: !!settings.virusTotalEnabled && !!settings.virusTotalApiKey,
+      hasKey: !!settings.virusTotalApiKey
+    }
+  })
+
+  ipcMain.handle('virusTotal:setKey', async (event, key) => {
+    if (!key) {
+      await saveSettings({ virusTotalApiKey: null, virusTotalEnabled: false })
+      return { ok: true, valid: false, reason: 'cleared' }
+    }
+    if (typeof key !== 'string') {
+      return { ok: false, valid: false, reason: 'invalid-key' }
+    }
+
+    // Validated with ONE cheap real call (GET /users/<key>) before ever
+    // persisting or enabling — never an EICAR/file-lookup style call, and
+    // the key is never logged (see `validateApiKey`'s own contract).
+    const { valid, reason } = await validateApiKey(key)
+    if (!valid) {
+      return { ok: false, valid: false, reason }
+    }
+
+    await saveSettings({ virusTotalApiKey: key, virusTotalEnabled: true })
+    return { ok: true, valid: true, reason: null }
+  })
+
+  ipcMain.handle('virusTotal:scanBook', async (event, bookId) => {
+    if (!virusTotalScanner) return { queued: false }
+    return virusTotalScanner.scanBook(bookId)
+  })
 }
 
 // ---------------------------------------------------------------------------
@@ -631,6 +704,7 @@ async function bootstrap() {
   defaultDownloadDir = path.join(userDataDir, 'downloads')
   torrentsFilePath = path.join(userDataDir, 'torrents.json')
   torrentFilesDir = path.join(userDataDir, 'torrents')
+  vtCacheFilePath = path.join(userDataDir, 'vt-cache.json')
 
   await fs.mkdir(coversDir, { recursive: true })
 
@@ -642,7 +716,28 @@ async function bootstrap() {
     console.error('[main] failed to create download dir:', err)
   })
 
-  torrentManager = createTorrentManager({ library, coversDir, getWindow, torrentsFilePath, torrentFilesDir })
+  virusTotalScanner = createVirusTotalScanner({
+    library,
+    getWindow,
+    getSettings: () => settingsCache,
+    cacheFilePath: vtCacheFilePath
+  })
+
+  torrentManager = createTorrentManager({
+    library,
+    coversDir,
+    getWindow,
+    torrentsFilePath,
+    torrentFilesDir,
+    // docs/PLAN4B.md: "after handleDone imports a book, enqueue that book's
+    // audio files for scanning if VT is enabled" — the enabled/key check
+    // itself lives inside `scanBook`, so this is a no-op when VT isn't set up.
+    onBookImported: (book) => {
+      virusTotalScanner.scanBook(book.id).catch((err) => {
+        console.error('[main] failed to enqueue newly-imported book for scanning:', err)
+      })
+    }
+  })
 
   registerMediaProtocol()
   registerIpcHandlers()
@@ -662,6 +757,12 @@ async function bootstrap() {
   // `handleIncomingMagnet` queued until now.
   appReadyForMagnets = true
   await flushPendingMagnets()
+
+  // docs/PLAN4B.md: "on app start, enqueue books whose scan field is
+  // missing/stale" — bounded naturally by the scanner's own sequential
+  // book queue + shared rate-limited lookup queue; no-ops entirely if VT
+  // isn't enabled/configured.
+  virusTotalScanner.enqueueStaleBooks()
 }
 
 app.on('window-all-closed', () => {
@@ -681,6 +782,7 @@ app.on('before-quit', (event) => {
   // exit mid-write and truncate in-progress piece writes.
   event.preventDefault()
   quitting = true
+  virusTotalScanner?.destroy()
   torrentManager
     .destroy()
     .catch((err) => console.error('[main] error destroying torrent client:', err))

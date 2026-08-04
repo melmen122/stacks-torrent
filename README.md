@@ -17,6 +17,50 @@ A local-only Electron desktop app (Mac + Windows) for downloading audiobooks via
 - **Settings** — Change the default download folder for new torrents; existing and in-progress downloads keep their original location. Set as default magnet link handler.
 - **Set as Default Magnet Handler** — Clicking a magnet link in your browser or file manager opens Audiobook Library and starts the download. One-click registration from Settings.
 - **Search & Sort** — Filter library by title/author; sort by recently added, title A–Z, or author A–Z.
+- **Safety Features** — Two complementary layers protect against malicious files: local pre-download filtering blocks executables and archives before they ever touch disk, while optional VirusTotal scanning provides post-download verification via file hashes (see **Safety** section below).
+
+## Safety
+
+**Two complementary layers protect your library:**
+
+### Layer 1 — Pre-Download Safety Check (Always On, Local Only)
+
+Before any file content downloads, the app inspects the torrent's file manifest and downloads **only audio files** (plus small cover images ≤5MB). Executables (`.exe`, `.scr`, `.bat`, `.msi`, `.cmd`, `.com`, `.vbs`, `.ps1`, `.app`, `.dmg`, `.deb`, `.rpm`, `.sh`, and ~50 others), disguised files (e.g. `Chapter 1.mp3.exe`), archives (`.zip`, `.rar`, `.7z`, `.tar`, `.gz`, etc.), and unrecognized files are never requested from peers.
+
+**How it works:**
+- Filename tricks are normalized first (trailing dots/spaces, Unicode right-to-left overrides)
+- Works identically for magnet links and `.torrent` files
+- Each torrent row shows a safety badge: ✓ clean / ⚠ caution / ⛔ danger
+- Click the badge to see a list of all skipped files and why
+- If a torrent contains no audio at all, nothing downloads and the row warns you
+- After download completes, any stray bytes of skipped files are automatically deleted
+
+**Important:** This layer cannot detect malware *inside* a valid audio file—a malicious `.mp3` still shows "clean". That's what Layer 2 is for. Neither layer is a replacement for your OS antivirus (Windows Defender / macOS protections).
+
+### Layer 2 — VirusTotal Scanning (Opt-in, Requires Free API Key)
+
+After a book downloads, each audio file is SHA-256 hashed and the hash is looked up in VirusTotal's database. Hashes only—file contents are never uploaded.
+
+**Setup:**
+1. Sign up for a free VirusTotal account at [virustotal.com](https://www.virustotal.com)
+2. Copy your API key
+3. In Settings → "Virus scanning (VirusTotal)", paste your key (stored locally in `settings.json`, never sent to the renderer or logged)
+
+**How it works:**
+- Disabled by default; enabled when you supply an API key
+- After download, each audio file is automatically scanned in the background
+- Results per book: ✓ clean / ⚠ suspicious / ⛔ infected / unknown (neutral—not a safety signal)
+- Free tier is rate-limited to 4 lookups/minute, so a 199-file audiobook takes ~50 minutes
+- Scanning never blocks playback or the library
+- Results are cached locally (30-day TTL), so re-scans are instant
+- Manually scan any book via the book's menu → "Scan for viruses" / "Re-scan for viruses"
+- On app launch, previously-unscanned books are queued automatically
+
+**Important:**
+- VirusTotal cannot scan before downloading (no file = no hash). The app does *not* scan torrents before accepting them.
+- "Unknown" results are NOT a safety signal and do not render as "clean"—they simply mean VirusTotal has never seen this file.
+- This feature contacts an external service (hashes leave your machine); Layer 1 is entirely local.
+- Still not a replacement for OS antivirus.
 
 ## Requirements
 
@@ -197,8 +241,9 @@ Within that directory:
 ```
 userData/
   library.json          # Books and genres (JSON)
-  settings.json         # User settings (download directory)
+  settings.json         # User settings (download directory, VirusTotal API key)
   torrents.json         # In-progress torrent state (persistence)
+  vt-cache.json         # VirusTotal scan results cache (hash → verdict, TTL 30 days)
   covers/               # Extracted cover images
     {bookId}.jpg or .png
   downloads/            # Torrent downloads (default location)
@@ -233,6 +278,11 @@ electron/
     mediaGate.js                  # media:// protocol security & Range support
     torrentPersistence.js         # Save/restore torrent state across restarts
     magnetLink.js                 # Magnet URI parsing helpers (isMagnetUri, parseMagnetFromArgv)
+    safetyCheck.js                # Pre-download safety classification (audio-only filtering)
+    virusTotal.js                 # VirusTotal API wrapper (hash lookup, verdict mapping)
+    scanQueue.js                  # Rate-limited scan queue with caching (4 req/min, 30d TTL)
+    virusTotalCache.js            # Local cache persistence (vt-cache.json)
+    virusTotalScanner.js          # Hash calculation & background scanning orchestration
 
 src/renderer/
   index.html                      # Entry point
@@ -242,12 +292,16 @@ src/renderer/
   components/
     Sidebar, LibraryView, DownloadsView, PlayerBar, BookCard
     ChapterMenu.jsx               # Chapter selection popover
-    SettingsView.jsx              # Settings panel (download directory, magnet handler)
+    SettingsView.jsx              # Settings panel (download directory, magnet handler, VirusTotal key)
     DropImportOverlay.jsx         # Drag & drop import UI
     MagnetNavigator.jsx           # Non-visual magnet link handler (cold-start + warm-path)
+    SafetyBadge.jsx               # Pre-download safety verdict badge (clean/caution/danger)
+    SafetyDetails.jsx             # Detailed report: skipped files & reasons (popover/expand)
+    ScanBadge.jsx                 # VirusTotal scan status badge (scanning/clean/suspicious/infected/unknown)
+    VirusTotalContext.jsx         # VirusTotal API wrapper & state management
     [other components]
   context/
-    LibraryContext, PlayerContext, TorrentsContext, ToastContext
+    LibraryContext, PlayerContext, TorrentsContext, ToastContext, VirusTotalContext
   styles/
     variables.css                 # Palette, spacing, typography
     *.css                         # Component-scoped styles
@@ -277,7 +331,9 @@ The app includes a comprehensive test suite covering core functionality:
 npm test
 ```
 
-Runs 98 Vitest unit tests in the `tests/` directory, including:
+Runs 194 Vitest unit tests in the `tests/` directory, including:
+- Pre-download safety classification (audio-only, executables, disguised files, archives, counts, verdicts)
+- VirusTotal response parsing (200/404/401/429, verdict mapping, cache TTL, rate limiting)
 - Magnet URI parsing (isMagnetUri, parseMagnetFromArgv)
 - Byte-range parsing for media streaming (seek without buffering)
 - Import grouping logic (single books, multi-file books, disc layouts)

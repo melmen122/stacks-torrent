@@ -56,9 +56,23 @@ contextBridge.exposeInMainWorld('api', {
   // so dropped File objects are resolved to absolute paths via webUtils here.
   getPathForFile: (file) => webUtils.getPathForFile(file),
 
+  // VirusTotal post-download scanning (docs/PLAN4B.md). `virusTotalSetKey`
+  // is the only place the actual key string ever crosses this bridge (as an
+  // outgoing argument, never returned back) — `virusTotalGetSettings` only
+  // ever resolves booleans.
+  virusTotalGetSettings: () => ipcRenderer.invoke('virusTotal:getSettings'),
+  virusTotalSetKey: (key) => ipcRenderer.invoke('virusTotal:setKey', key),
+  virusTotalScanBook: (bookId) => ipcRenderer.invoke('virusTotal:scanBook', bookId),
+
   // Events (return an unsubscribe function)
   onTorrentsProgress: (callback) => subscribe('torrents:progress', callback),
   onTorrentsDone: (callback) => subscribe('torrents:done', callback),
   onLibraryChanged: (callback) => subscribe('library:changed', callback),
-  onMagnetReceived: (callback) => subscribe('system:magnet-received', callback)
+  onMagnetReceived: (callback) => subscribe('system:magnet-received', callback),
+  // Pre-download safety check (docs/PLAN4.md) — fired once per torrent when
+  // its file manifest has been classified and audio-only selection applied.
+  onSafetyReport: (callback) => subscribe('torrents:safety-report', callback),
+  // VirusTotal post-download scanning (docs/PLAN4B.md)
+  onScanProgress: (callback) => subscribe('virusTotal:scan-progress', callback),
+  onScanComplete: (callback) => subscribe('virusTotal:scan-complete', callback)
 })

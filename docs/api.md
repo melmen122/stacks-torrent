@@ -182,7 +182,12 @@ Array<{
   downloadSpeed: number,   // bytes/second
   numPeers: number,
   done: boolean,
-  paused: boolean
+  paused: boolean,
+  safety?: {               // Null until metadata arrives
+    verdict: 'clean' | 'caution' | 'danger',
+    hasAudio: boolean,
+    skippedCount: number
+  }
 }>
 ```
 
@@ -334,6 +339,71 @@ if (updated) {
 }
 ```
 
+## Virus Scanning (VirusTotal)
+
+### `virusTotal:getSettings()`
+Retrieve VirusTotal scanning settings. Does NOT return the API key itself.
+
+**Returns:**
+```typescript
+{
+  enabled: boolean,   // Whether scanning is enabled (false if no key set)
+  hasKey: boolean     // Whether an API key is configured
+}
+```
+
+**Example:**
+```javascript
+const settings = await window.api.virusTotalGetSettings();
+console.log('Scanning enabled:', settings.enabled);
+```
+
+### `virusTotal:setKey(key)`
+Set or update the VirusTotal API key. Pass `null` to clear the key and disable scanning. Validates the key by performing a test lookup.
+
+**Parameters:**
+- `key` (string|null) — VirusTotal API key, or null to clear
+
+**Returns:**
+```typescript
+{
+  ok: boolean,    // true if operation succeeded
+  valid: boolean, // true if key is valid (test lookup successful)
+  reason?: string // Error message if ok is false
+}
+```
+
+**Example:**
+```javascript
+const result = await window.api.virusTotalSetKey('your-api-key-here');
+if (result.ok && result.valid) {
+  console.log('API key saved and validated');
+} else {
+  console.error('Invalid key:', result.reason);
+}
+```
+
+### `virusTotal:scanBook(bookId)`
+Manually scan a book (or re-scan if already scanned). Enqueues the book's audio files for VirusTotal hash lookup. Scanning runs in the background and emits `virusTotal:scan-progress` and `virusTotal:scan-complete` events.
+
+**Parameters:**
+- `bookId` (string) — ID of the book to scan
+
+**Returns:**
+```typescript
+{
+  queued: boolean  // true if the book was enqueued for scanning
+}
+```
+
+**Example:**
+```javascript
+const result = await window.api.virusTotalScanBook('b1');
+if (result.queued) {
+  console.log('Scan queued for background processing');
+}
+```
+
 ## System
 
 ### `systemSetDefaultMagnetHandler()`
@@ -423,6 +493,17 @@ Shortcuts to the System magnet handler IPC calls (see [System](#system) section 
 - `systemIsDefaultMagnetHandler()` → same as `ipcRenderer.invoke('system:isDefaultMagnetHandler')`
 - `systemConsumePendingMagnet()` → same as `ipcRenderer.invoke('system:consumePendingMagnet')`
 
+### VirusTotal Preload Methods
+
+Shortcuts to the VirusTotal API IPC calls (see [Virus Scanning](#virus-scanning-virustotal) section for details):
+
+- `virusTotalGetSettings()` → same as `ipcRenderer.invoke('virusTotal:getSettings')`
+- `virusTotalSetKey(key)` → same as `ipcRenderer.invoke('virusTotal:setKey', key)`
+- `virusTotalScanBook(bookId)` → same as `ipcRenderer.invoke('virusTotal:scanBook', bookId)`
+- `onScanProgress(callback)` → same as subscribing to `virusTotal:scan-progress` event
+- `onScanComplete(callback)` → same as subscribing to `virusTotal:scan-complete` event
+- `onSafetyReport(callback)` → same as subscribing to `torrents:safety-report` event
+
 ## Events
 
 Events are subscribed via `on*` methods that return an unsubscribe function.
@@ -444,6 +525,36 @@ const unsubscribe = window.api.onTorrentsProgress((torrents) => {
 unsubscribe();
 ```
 
+### `onSafetyReport(callback)`
+Fired when a torrent's file manifest is analyzed for safety (pre-download classification). The app filters out executables, archives, and other risky files; only audio files are selected for download.
+
+**Callback:**
+```typescript
+(payload: {
+  infoHash: string,
+  name: string,
+  verdict: 'clean' | 'caution' | 'danger',
+  hasAudio: boolean,         // false if torrent contains no audio files
+  downloadedCount: number,   // Number of audio files to be downloaded
+  skipped: [{                // Files that will NOT be downloaded
+    name: string,
+    category: 'executable' | 'disguised' | 'archive' | 'companion' | 'other',
+    reason: string           // Human-readable explanation
+  }]
+}) => void
+```
+
+**Example:**
+```javascript
+window.api.onSafetyReport((report) => {
+  if (report.verdict === 'danger') {
+    console.error(`Dangerous files blocked in "${report.name}"`);
+  } else if (!report.hasAudio) {
+    console.warn(`"${report.name}" contains no audio files`);
+  }
+});
+```
+
 ### `onTorrentsDone(callback)`
 Fired when a torrent completes and is successfully auto-imported into the library.
 
@@ -456,6 +567,51 @@ Fired when a torrent completes and is successfully auto-imported into the librar
 ```javascript
 window.api.onTorrentsDone(({ infoHash, name, bookId }) => {
   console.log(`Torrent "${name}" imported as book ${bookId}`);
+});
+```
+
+### `onScanProgress(callback)`
+Fired periodically during VirusTotal scanning of a book to report progress.
+
+**Callback:**
+```typescript
+(payload: {
+  bookId: string,
+  done: number,      // Number of files scanned so far
+  total: number      // Total files to scan for this book
+}) => void
+```
+
+**Example:**
+```javascript
+window.api.onScanProgress(({ bookId, done, total }) => {
+  console.log(`Scanned ${done}/${total} files in book ${bookId}`);
+});
+```
+
+### `onScanComplete(callback)`
+Fired when VirusTotal scanning completes for a book. Reports the overall verdict and any infected files.
+
+**Callback:**
+```typescript
+(payload: {
+  bookId: string,
+  verdict: 'clean' | 'suspicious' | 'infected' | 'unknown',
+  infectedFiles: [{
+    name: string,
+    malicious: number  // Count of engines flagging this file as malicious
+  }]
+}) => void
+```
+
+**Example:**
+```javascript
+window.api.onScanComplete(({ bookId, verdict, infectedFiles }) => {
+  if (verdict === 'infected') {
+    console.error(`Book ${bookId} contains infected files:`, infectedFiles);
+  } else if (verdict === 'clean') {
+    console.log(`Book ${bookId} is clean`);
+  }
 });
 ```
 

@@ -4,6 +4,89 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [Phase 4] — Safety Features (Pre-Download Filtering + VirusTotal Scanning)
+
+### Added
+
+#### Layer 1 — Pre-Download Safety Check (Always On, Local Only)
+- **Automatic manifest-based filtering** — Before any file content is downloaded, the app inspects the torrent's file manifest and downloads ONLY audio files (plus small cover images ≤5MB)
+  - Executables (.exe, .scr, .bat, .msi, .cmd, .com, .vbs, .ps1, .app, .dmg, .deb, .rpm, .sh, and ~50 other executable extensions) are never selected
+  - Disguised files (final extension is executable + preceding media/doc extension, e.g. `Chapter 1.mp3.exe`) are detected and blocked
+  - Archives (.zip, .rar, .7z, .tar, .gz, .bz2, .xz, .iso, .cab) are never selected
+  - Unrecognized file extensions are never selected
+  - Filename tricks (trailing dots/spaces, Unicode RTL overrides) are normalized before classification
+  - Works identically for magnet links and .torrent files
+- **Safety verdict badge** on each torrent row: clean ✓ / caution ⚠ / danger ⛔
+  - Shows "checking…" while metadata is arriving
+  - Click badge to view detailed report of all skipped files and reasons
+  - Categorizes skipped files: executable, disguised, archive, companion (benign images/metadata), other (unknown)
+- **No-audio guard** — If a torrent contains no audio files (only archives/executables), nothing is downloaded; row warns user and offers remove action
+- **Automatic cleanup** — After download completes, any stray bytes of skipped files are deleted (BitTorrent pieces can straddle file boundaries)
+- Core module: `electron/lib/safetyCheck.js` with pure `classifyTorrentFiles()` function
+- IPC event: `torrents:safety-report` with verdict, hasAudio, skipped file list, counts
+
+#### Layer 2 — VirusTotal Scanning (Opt-in, Post-Download)
+- **Hash-based file scanning** — After a book downloads, each audio file is SHA-256 hashed and looked up in VirusTotal's database (hashes only; file contents never uploaded)
+  - Requires free API key from [virustotal.com](https://virustotal.com)
+  - Scans run in the background after download completes
+  - Results cached locally (30-day TTL) to avoid redundant lookups
+  - Rate-limited to 4 requests/minute (free tier), so large audiobooks scan sequentially in the background
+- **Scan verdict** per book: clean ✓ / suspicious ⚠ / infected ⛔ / unknown (neutral, not a safety signal)
+- **Infected book handling** — Persistent red alert on the library card + toast notification; one-click remove (files not auto-deleted)
+- **Settings panel** — New "Virus scanning (VirusTotal)" section:
+  - API key input (stored locally in settings.json as plaintext, never logged or sent to renderer)
+  - "Get a free key" link to virustotal.com
+  - Status indicator and honest caption: scans run AFTER download using file hashes; free tier is rate-limited; complements but does not replace OS antivirus
+- **Automatic on-launch scan** — When app launches, previously-unscanned books are queued automatically if VT enabled
+- **Manual re-scan** — Book menu → "Scan for viruses" / "Re-scan for viruses" (disabled with hint if no key)
+- Core modules:
+  - `electron/lib/virusTotal.js` — API wrapper (hashFile, lookupHash, verdict mapping)
+  - `electron/lib/scanQueue.js` — Rate-limited queue with caching (4 req/min, 30d TTL)
+  - `electron/lib/virusTotalCache.js` — Local cache persistence (vt-cache.json)
+  - `electron/lib/virusTotalScanner.js` — Hash calculation & background orchestration
+- IPC methods: `virusTotal:getSettings`, `virusTotal:setKey(key)`, `virusTotal:scanBook(bookId)`
+- IPC events: `virusTotal:scan-progress`, `virusTotal:scan-complete`
+- Data model: `book.scan` field with state, verdict, file hashes, malicious/suspicious counts
+- New UI components:
+  - `SafetyBadge.jsx` — Pre-download safety verdict display
+  - `SafetyDetails.jsx` — Detailed report of skipped files (popover/expand)
+  - `ScanBadge.jsx` — VirusTotal scan status (scanning/clean/suspicious/infected/unknown)
+  - `VirusTotalContext.jsx` — API wrapper & state management
+
+### Testing
+- 96 new unit tests for safety features (194 total):
+  - `safetyCheck.test.js` — Exhaustive classification (audio-only, executables, disguised, archives, companions, mixed, no-audio, case-insensitivity, no-extension, counts)
+  - `virusTotal.test.js` — Verdict mapping (malicious/suspicious thresholds), response parsing (200/404/401/429/malformed), cache TTL
+  - `scanQueue.test.js` — Rate limiting (4 req/min), queue deduplication, exponential backoff on 429
+  - `virusTotalCache.test.js` — Persistence, TTL logic, known-hash fast-path
+  - `virusTotalScanner.test.js` — Hash calculation, background orchestration
+  - `torrents.completion.test.js` — Integration: no-audio guard, auto-import skip
+
+### Documentation
+- **README.md**
+  - Features: added safety layer summary
+  - New **Safety** section: Layer 1 (always on, local, manifest filtering, badge, auto-cleanup) and Layer 2 (opt-in, VT API key setup, hash-based scanning, rate limiting, unknown ≠ safe); honesty caveats (not OS AV replacement, Layer 1 cannot detect malware inside files, Layer 2 post-download only)
+  - Settings subsection: VirusTotal key setup steps
+  - Where Data Lives: added vt-cache.json
+  - Project Structure: new backend modules (safetyCheck.js, virusTotal.js, scanQueue.js, virusTotalCache.js, virusTotalScanner.js) and renderer components (SafetyBadge.jsx, SafetyDetails.jsx, ScanBadge.jsx, VirusTotalContext.jsx)
+  - Testing: updated test count (98 → 194); listed safety-specific test suites
+- **docs/api.md**
+  - `torrentsList()` gains optional `safety` field (verdict, hasAudio, skippedCount)
+  - New VirusTotal section: `virusTotal:getSettings()`, `virusTotal:setKey(key)`, `virusTotal:scanBook(bookId)` with descriptions and examples
+  - New events: `torrents:safety-report` (pre-download classification), `virusTotal:scan-progress` (per-file scan status), `virusTotal:scan-complete` (book-level verdict)
+  - Preload utilities: `virusTotalGetSettings()`, `virusTotalSetKey()`, `virusTotalScanBook()`, `onScanProgress()`, `onScanComplete()`, `onSafetyReport()`
+- **docs/models.md**
+  - Book model: new `scan` field (state, verdict, scannedAt, file hashes with malicious/suspicious counts)
+  - Settings model: new `virusTotalApiKey` and `virusTotalEnabled` fields; note on key handling
+  - New VirusTotal Cache section: entry structure, TTL policy, file organization
+  - File Organization: added vt-cache.json
+
+### Honesty Constraints (Enforced in UI + Docs)
+- Layer 1 is NOT a replacement for OS antivirus and CANNOT detect malware inside a valid audio file
+- VirusTotal scans AFTER download; the app does not scan before selecting files
+- "Unknown" verdict (file never seen by VirusTotal) is NOT a safety signal and does NOT render as "clean"
+- VirusTotal is the one external network call; Layer 1 is entirely local; hashes (not files) leave the machine
+
 ## [Phase 3] — Magnet Link Default Handler
 
 ### Added
@@ -32,7 +115,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   - Rejects false positives (paths containing "magnet:", non-string values)
 
 ### Documentation
-- **README.md** — Features section, new "Making Audiobook Library your default magnet app" usage subsection with platform-specific steps (macOS, Windows, manual alternative), Project Structure, Test count (87 → 98)
+- **README.md** — Features section, new "Making Audiobook Library your default magnet app" usage subsection with platform-specific steps (macOS, Windows, manual alternative), Project Structure, Test count (0 → 98)
 - **docs/api.md** — System IPC section with `system:setDefaultMagnetHandler`, `system:isDefaultMagnetHandler`, `system:consumePendingMagnet`, event `system:magnet-received`, and preload shortcuts
 
 ## [Phase 2]

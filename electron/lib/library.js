@@ -80,7 +80,11 @@ export function createLibraryStore(libraryFilePath) {
       // Backward-compatible/optional (docs/PLAN2.md): only ever populated for
       // single-file books where music-metadata could extract embedded
       // chapter markers; existing books without this field are untouched.
-      chapters: bookData.chapters ?? null
+      chapters: bookData.chapters ?? null,
+      // Backward-compatible/optional (docs/PLAN4B.md): VirusTotal scan
+      // state. `null` (the default) behaves as "unscanned" for any book —
+      // existing books without this field are untouched.
+      scan: bookData.scan ?? null
     }
     state.books.push(book)
     await save()
@@ -148,6 +152,18 @@ export function createLibraryStore(libraryFilePath) {
     return { ok: true }
   }
 
+  /**
+   * Replace a book's VirusTotal scan state wholesale (docs/PLAN4B.md).
+   * `scan` should be `{ state, verdict, scannedAt, files }` or `null`.
+   */
+  async function setBookScan(bookId, scan) {
+    const book = findBook(bookId)
+    if (!book) throw new Error(`Book not found: ${bookId}`)
+    book.scan = scan
+    await save()
+    return book
+  }
+
   return {
     load,
     save,
@@ -161,6 +177,7 @@ export function createLibraryStore(libraryFilePath) {
     renameGenre,
     deleteGenre,
     savePosition,
+    setBookScan,
     getState: () => state
   }
 }

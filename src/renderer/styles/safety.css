@@ -1,0 +1,151 @@
+/* Safety-check badge (TorrentRow) + its details popover (SafetyDetails,
+   portaled to document.body — see safety-details rules below). */
+
+.safety-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 3px 8px 3px 7px;
+  border-radius: var(--radius-full);
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+.safety-badge-button {
+  background: none;
+  cursor: pointer;
+  transition: background var(--transition-fast), border-color var(--transition-fast);
+}
+
+.safety-badge-checking {
+  color: var(--text-tertiary);
+  background: var(--bg-elevated-2);
+}
+.safety-badge-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-tertiary);
+  animation: safety-dot-pulse 1.4s ease-in-out infinite;
+}
+
+.safety-badge-clean {
+  color: var(--success);
+  background: var(--success-bg);
+}
+
+.safety-badge-caution {
+  color: #e8b23f;
+  background: rgba(232, 178, 63, 0.14);
+}
+.safety-badge-caution.safety-badge-button:hover {
+  background: rgba(232, 178, 63, 0.22);
+}
+
+.safety-badge-danger {
+  color: var(--danger);
+  background: var(--danger-bg);
+}
+.safety-badge-danger.safety-badge-button:hover {
+  background: rgba(226, 106, 106, 0.24);
+}
+
+.safety-badge-count {
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: var(--radius-full);
+  padding: 0 5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.safety-badge-trigger {
+  display: inline-flex;
+}
+
+@keyframes safety-dot-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
+/* Details popover */
+.safety-details {
+  position: fixed;
+  width: 320px;
+  max-width: calc(100vw - 16px);
+  max-height: 320px;
+  overflow-y: auto;
+  background: var(--bg-elevated-2);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+  padding: var(--space-3);
+  z-index: 300;
+}
+.safety-details-header {
+  font-size: var(--fs-xs);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-tertiary);
+  margin-bottom: var(--space-2);
+}
+.safety-details-empty {
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+}
+.safety-details-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.safety-details-item {
+  padding: var(--space-2);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+}
+.safety-details-item-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+.safety-details-item-name {
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.safety-details-category {
+  flex-shrink: 0;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  padding: 2px 7px;
+  border-radius: var(--radius-full);
+  color: var(--text-secondary);
+  background: var(--bg-hover);
+}
+.safety-details-category-executable,
+.safety-details-category-disguised {
+  color: var(--danger);
+  background: var(--danger-bg);
+}
+.safety-details-category-archive,
+.safety-details-category-other {
+  color: #e8b23f;
+  background: rgba(232, 178, 63, 0.14);
+}
+.safety-details-category-companion {
+  color: var(--text-tertiary);
+  background: var(--bg-hover);
+}
+.safety-details-reason {
+  margin-top: 4px;
+  font-size: var(--fs-xs);
+  color: var(--text-secondary);
+  line-height: 1.4;
+}

@@ -3,6 +3,7 @@ import { HAS_API } from './api.js';
 import { ToastProvider } from './context/ToastContext.jsx';
 import { LibraryProvider } from './context/LibraryContext.jsx';
 import { TorrentsProvider } from './context/TorrentsContext.jsx';
+import { VirusTotalProvider } from './context/VirusTotalContext.jsx';
 import { PlayerProvider } from './context/PlayerContext.jsx';
 import Sidebar from './components/Sidebar.jsx';
 import LibraryView from './components/LibraryView.jsx';
@@ -31,34 +32,36 @@ export default function App() {
     <ToastProvider>
       <LibraryProvider>
         <TorrentsProvider>
-          <PlayerProvider>
-            <div className="app-shell">
-              <div className="app-body">
-                <Sidebar
-                  view={view}
-                  onChangeView={setView}
-                  selectedGenre={selectedGenre}
-                  onSelectGenre={(g) => { setSelectedGenre(g); setView('library'); }}
-                />
-                <main className="app-main">
-                  {view === 'library' ? (
-                    <LibraryView
-                      selectedGenre={selectedGenre}
-                      onNavigateDownloads={() => setView('downloads')}
-                    />
-                  ) : view === 'downloads' ? (
-                    <DownloadsView />
-                  ) : (
-                    <SettingsView />
-                  )}
-                </main>
+          <VirusTotalProvider>
+            <PlayerProvider>
+              <div className="app-shell">
+                <div className="app-body">
+                  <Sidebar
+                    view={view}
+                    onChangeView={setView}
+                    selectedGenre={selectedGenre}
+                    onSelectGenre={(g) => { setSelectedGenre(g); setView('library'); }}
+                  />
+                  <main className="app-main">
+                    {view === 'library' ? (
+                      <LibraryView
+                        selectedGenre={selectedGenre}
+                        onNavigateDownloads={() => setView('downloads')}
+                      />
+                    ) : view === 'downloads' ? (
+                      <DownloadsView />
+                    ) : (
+                      <SettingsView />
+                    )}
+                  </main>
+                </div>
+                <PlayerBar />
+                <ToastStack />
+                <DropImportOverlay />
+                <MagnetNavigator onMagnet={navigateToDownloads} />
               </div>
-              <PlayerBar />
-              <ToastStack />
-              <DropImportOverlay />
-              <MagnetNavigator onMagnet={navigateToDownloads} />
-            </div>
-          </PlayerProvider>
+            </PlayerProvider>
+          </VirusTotalProvider>
         </TorrentsProvider>
       </LibraryProvider>
     </ToastProvider>

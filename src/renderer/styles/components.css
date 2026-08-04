@@ -42,6 +42,13 @@
 .icon-menu-item.active {
   color: var(--accent);
 }
+.icon-menu-item:disabled {
+  color: var(--text-tertiary);
+  cursor: not-allowed;
+}
+.icon-menu-item:disabled:hover {
+  background: transparent;
+}
 .icon-menu-check {
   width: 14px;
   display: inline-flex;
