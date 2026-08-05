@@ -61,6 +61,8 @@ import WebTorrent from 'webtorrent'
 import { scanBookFiles, isAudioFile } from './metadata.js'
 import { loadPersistedTorrents, savePersistedTorrents } from './torrentPersistence.js'
 import { classifyTorrentFiles } from './safetyCheck.js'
+import { computeDiscoveryState } from './discoveryState.js'
+import { buildTorrentSource } from './bookSource.js'
 
 const PROGRESS_INTERVAL_MS = 1000
 
@@ -125,6 +127,17 @@ export function createTorrentManager({ library, coversDir, getWindow, torrentsFi
   // Live bits (`paused`, `done`) are read straight off the torrent at
   // persist time instead of being duplicated here.
   const persistMeta = new WeakMap()
+  // Discovery-timing bits per torrent (real Date.now() readings, never
+  // persisted — a restart re-derives "searching" from scratch since it's
+  // purely a display signal). Set synchronously in `addInternal`, right
+  // after `client.add()`, so it's available from the very first
+  // `summarize()` call. `lastPeerSeenAt` is bumped forward in `summarize()`
+  // itself whenever `numPeers > 0` is observed, which is what lets
+  // `computeDiscoveryState` recover out of 'no-peers' the moment real peers
+  // reappear instead of latching. A WeakMap, like the others above: no
+  // manual cleanup needed on `remove()` — the entry is simply unreachable
+  // (and GC-eligible) once the torrent itself is.
+  const discoveryTiming = new WeakMap()
 
   client.on('error', (err) => {
     // A client-level error (e.g. malformed magnet/torrent file) — surface in
@@ -148,14 +161,54 @@ export function createTorrentManager({ library, coversDir, getWindow, torrentsFi
 
   function summarize(torrent) {
     const report = safetyReports.get(torrent)
+    const progress = computeAudioProgress(torrent)
+
+    // `audioFilesByTorrent` is set exactly once, synchronously, inside
+    // `classifyAndSelect` — which only ever runs on the torrent's real
+    // 'metadata' event (see its comment) — so `.has()` here is a reliable
+    // "has metadata actually arrived" signal. (Unlike `safetyReports`,
+    // which can be pre-populated with a *placeholder* for a restored
+    // torrent before its metadata has re-arrived — see `addInternal` — so
+    // it would wrongly read as "metadata arrived" immediately on restore.)
+    const hasMetadata = audioFilesByTorrent.has(torrent)
+
+    const timing = discoveryTiming.get(torrent) ?? { addedAt: Date.now(), lastPeerSeenAt: Date.now() }
+    const now = Date.now()
+    if (torrent.numPeers > 0) timing.lastPeerSeenAt = now
+    discoveryTiming.set(torrent, timing)
+
+    const discovery = computeDiscoveryState({
+      hasMetadata,
+      // `report` is only ever the real classification by the time
+      // `hasMetadata` is true — `classifyAndSelect` sets both
+      // `safetyReports` and `audioFilesByTorrent` together, synchronously,
+      // on the real 'metadata' event — so this is never the restore-time
+      // placeholder (see the `hasMetadata` comment above). `?? true` covers
+      // the defensive/shouldn't-happen case where `report` is somehow
+      // missing; computeDiscoveryState's own default does the same, this
+      // just makes the intent explicit here too.
+      hasAudio: report?.hasAudio ?? true,
+      numPeers: torrent.numPeers,
+      progress,
+      paused: !!torrent.paused,
+      msSinceAdded: now - timing.addedAt,
+      msSinceLastPeer: now - timing.lastPeerSeenAt
+    })
+
     return {
       infoHash: torrent.infoHash,
       name: torrent.name,
-      progress: computeAudioProgress(torrent),
+      progress,
       downloadSpeed: torrent.downloadSpeed,
       numPeers: torrent.numPeers,
       done: audioDownloadComplete.has(torrent),
       paused: !!torrent.paused,
+      // 'searching' | 'no-peers' | 'connected' — see discoveryState.js.
+      // Purely informational (never auto-pauses/removes anything); lets the
+      // renderer explain an otherwise-silent stuck-at-0%-forever download
+      // (e.g. a magnet whose trackers are all dead and DHT finds nothing)
+      // instead of showing "Checking…" indefinitely with no feedback.
+      discovery,
       // null = metadata not yet arrived / still checking (renderer shows
       // "checking…"). Trimmed shape per docs/PLAN4.md's exact contract.
       safety: report
@@ -475,6 +528,15 @@ export function createTorrentManager({ library, coversDir, getWindow, torrentsFi
 
       if (!scanned.files.length) return
 
+      // Layer-1 provenance (docs/models.md's `Book.source`): persisted onto
+      // the book itself — not just the transient torrents:list entry — so
+      // it survives both a restart and this torrent later being removed.
+      // This is the only genuine positive safety signal available for most
+      // audiobooks, since VirusTotal (layer 2) returns 'unknown' for
+      // essentially every personal rip. `report` is set synchronously by
+      // `classifyAndSelect` on 'metadata', which must have already run for
+      // any audio to have been selected/downloaded/completed at all — the
+      // `report ? ... : undefined` guard is defensive only.
       const book = await library.addBook({
         id: bookId,
         title: scanned.title,
@@ -483,7 +545,8 @@ export function createTorrentManager({ library, coversDir, getWindow, torrentsFi
         coverPath: scanned.coverPath,
         durationSec: scanned.durationSec,
         suggestedGenre: scanned.suggestedGenre,
-        chapters: scanned.chapters
+        chapters: scanned.chapters,
+        source: report ? buildTorrentSource(torrent.infoHash, report) : undefined
       })
 
       // Record the historical fact that this torrent's book was imported,
@@ -575,6 +638,15 @@ export function createTorrentManager({ library, coversDir, getWindow, torrentsFi
         return
       }
 
+      // Seed discovery timing synchronously, before any async gap, so the
+      // very first `summarize()` call (even one racing in from the
+      // 'infoHash' handler a tick later) already has it. For a restored
+      // torrent, `addedAt` is the *original* add time carried over from the
+      // previous session (see above) — deliberately not reset to "now",
+      // so a torrent that was already stuck before restart is reported as
+      // 'no-peers' immediately rather than getting a fresh grace period.
+      discoveryTiming.set(torrent, { addedAt, lastPeerSeenAt: addedAt })
+
       // Pre-populate the trimmed safety summary from a restored entry (if
       // any) immediately, synchronously — so `summarize()` can show the
       // last-known badge right away instead of "checking…" while waiting
@@ -643,7 +715,7 @@ export function createTorrentManager({ library, coversDir, getWindow, torrentsFi
    * otherwise hang this promise (and the renderer's `torrentsAdd` call)
    * forever.
    *
-   * @returns {Promise<{infoHash:string, name:string, progress:number, downloadSpeed:number, numPeers:number, done:boolean, paused:boolean, safety:{verdict:string,hasAudio:boolean,skippedCount:number}|null}>}
+   * @returns {Promise<{infoHash:string, name:string, progress:number, downloadSpeed:number, numPeers:number, done:boolean, paused:boolean, discovery:('searching'|'no-peers'|'connected'), safety:{verdict:string,hasAudio:boolean,skippedCount:number}|null}>}
    */
   function add(magnetOrTorrentPath, downloadDir) {
     return addInternal(magnetOrTorrentPath, downloadDir)
@@ -696,6 +768,30 @@ export function createTorrentManager({ library, coversDir, getWindow, torrentsFi
     const torrent = findTorrent(infoHash)
     if (!torrent) throw new Error(`Torrent not found: ${infoHash}`)
     torrent.resume()
+    // Grant a fresh discovery grace window on resume (review fix — MAJOR):
+    // resuming means the client starts actively searching for peers again
+    // right now, regardless of how long the torrent previously sat paused
+    // (paused this session, or restored already-paused from a prior one,
+    // where `addedAt` can be days old — see `addInternal`). Without this,
+    // the very next `summarize()` (<=1s later, via the progress loop) would
+    // immediately read `msSinceAdded`/`msSinceLastPeer` as far past
+    // NO_PEERS_TIMEOUT_MS and report 'no-peers' before the client has even
+    // had a chance to reconnect — exactly the false alarm the grace period
+    // exists to prevent.
+    //
+    // Deliberately NOT applied anywhere in the restore path itself (a
+    // torrent restored *un-paused*, which starts downloading again
+    // automatically at `addInternal` without ever going through `resume()`
+    // here): that path intentionally keeps the original `addedAt`, so a
+    // torrent that was already stuck before the restart is reported
+    // 'no-peers' promptly on the next launch instead of getting a fresh
+    // multi-minute grace period every single time the app starts.
+    const timing = discoveryTiming.get(torrent)
+    if (timing) {
+      const now = Date.now()
+      timing.addedAt = now
+      timing.lastPeerSeenAt = now
+    }
     await persistNow()
     return summarize(torrent)
   }

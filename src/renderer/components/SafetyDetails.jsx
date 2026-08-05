@@ -103,19 +103,29 @@ export default function SafetyDetails({ torrentName, safety, report, anchorRef, 
       ) : skipped.length === 0 ? (
         <p className="safety-details-empty">No skipped files.</p>
       ) : (
-        <ul className="safety-details-list">
-          {skipped.map((file, i) => (
-            <li key={`${file.name}-${i}`} className="safety-details-item">
-              <div className="safety-details-item-top">
-                <span className="safety-details-item-name" title={file.name}>{file.name}</span>
-                <span className={`safety-details-category safety-details-category-${file.category}`}>
-                  {CATEGORY_LABEL[file.category] || file.category || 'Unrecognized'}
-                </span>
-              </div>
-              {file.reason && <p className="safety-details-reason">{file.reason}</p>}
-            </li>
-          ))}
-        </ul>
+        <>
+          <ul className="safety-details-list">
+            {skipped.map((file, i) => (
+              <li key={`${file.name}-${i}`} className="safety-details-item">
+                <div className="safety-details-item-top">
+                  <span className="safety-details-item-name" title={file.name}>{file.name}</span>
+                  <span className={`safety-details-category safety-details-category-${file.category}`}>
+                    {CATEGORY_LABEL[file.category] || file.category || 'Unrecognized'}
+                  </span>
+                </div>
+                {file.reason && <p className="safety-details-reason">{file.reason}</p>}
+              </li>
+            ))}
+          </ul>
+          {/* `skipped` is capped (currently to the first 50); `count` above
+              is the true, uncapped total — make the gap explicit rather
+              than silently showing a partial list next to a bigger number. */}
+          {count > skipped.length && (
+            <p className="safety-details-truncated">
+              Showing the first {skipped.length} of {count}.
+            </p>
+          )}
+        </>
       )}
     </div>,
     document.body,

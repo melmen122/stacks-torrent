@@ -53,14 +53,44 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   - `ScanBadge.jsx` — VirusTotal scan status (scanning/clean/suspicious/infected/unknown)
   - `VirusTotalContext.jsx` — API wrapper & state management
 
+### Enhanced
+
+#### Dead & Stalled Torrent Feedback
+- **Discovery status messaging** — Instead of silently stalling, the Downloads view now shows clear peer-discovery feedback:
+  - `'searching'` — Metadata arriving, within grace period, peers being sought
+  - `'no-peers'` — After ~2 minutes with zero peers, explains "No peers found — nobody appears to be sharing this torrent right now. It may be dead, or seeders may come online later."
+  - `'connected'` — At least one peer connected (never latches; recovers immediately if a peer reappears)
+  - Paused downloads are exempt from no-peers reporting
+- Helps users distinguish stuck-torrent UX from app hang or network issues
+- Discovery status persisted in runtime torrent state; not persisted across restart (safe)
+
+#### Clearer Virus-Scan Results (Layer 2)
+- **Scan verdict display refined** — More prominent, self-explanatory boxes:
+  - Clean → green "✓ No threats found — checked by VirusTotal"
+  - Unknown → neutral "Not in VirusTotal's database" + always-visible explainer: "VirusTotal's knowledge is crowdsourced; audiobooks uploaded by individuals are almost never present. This means no known threats, but not independent verification. Play with confidence."
+  - Suspicious → amber warning badge
+  - Infected → loud red "MALWARE DETECTED" banner with one-click Remove button (single unified signal, no competing indicators)
+- "Unknown" verdict explicitly documented as normal, expected, and safe for audiobooks
+
+#### Provenance Badge on Book Cards (Layer 1)
+- **New book-level safety signal** — Each book now shows its Layer 1 verdict at import time, persisted to `book.source`:
+  - "✓ Audio-only download" — Torrent contained only audio files and safe companions (covers, metadata)
+  - "✓ Audio only — N risky file(s) skipped" — Torrent had non-audio files (executables, archives), which were blocked pre-download and never touched disk. Click badge to list them.
+  - No badge = legacy book (added before this field existed) or manually imported; app makes no safety claim
+- Benign companion files (.nfo, .cue, cover art ≤5MB) are NOT counted as risky
+- Books imported before this update will never gain a badge—absence is "we don't know," not "we checked"
+- Honest positive signal since VirusTotal's Layer 2 returns "unknown" for nearly all audiobooks
+
 ### Testing
-- 96 new unit tests for safety features (194 total):
+- 130 new unit tests for safety-UX features (231 total):
   - `safetyCheck.test.js` — Exhaustive classification (audio-only, executables, disguised, archives, companions, mixed, no-audio, case-insensitivity, no-extension, counts)
-  - `virusTotal.test.js` — Verdict mapping (malicious/suspicious thresholds), response parsing (200/404/401/429/malformed), cache TTL
+  - `virusTotal.test.js` — Verdict mapping (malicious/suspicious thresholds), response parsing (200/404/401/429/malformed), cache TTL, "unknown" verdict for audiobooks
   - `scanQueue.test.js` — Rate limiting (4 req/min), queue deduplication, exponential backoff on 429
   - `virusTotalCache.test.js` — Persistence, TTL logic, known-hash fast-path
   - `virusTotalScanner.test.js` — Hash calculation, background orchestration
   - `torrents.completion.test.js` — Integration: no-audio guard, auto-import skip
+  - `discoveryState.test.js` — Discovery status state machine ('searching' → 'no-peers' → 'connected'), grace period timing, peer detection, paused-state exemption
+  - `bookSource.test.js` — Provenance badge persistence (TorrentSource safety verdict at import time), legacy-book handling, detail-list capping
 
 ### Documentation
 - **README.md**

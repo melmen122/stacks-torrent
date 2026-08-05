@@ -56,6 +56,106 @@ describe('createLibraryStore', () => {
     expect(book.genreId).toBeNull()
     expect(book.coverPath).toBeNull()
     expect(book.chapters).toBeNull()
+    // Backward-compatible/optional (source provenance): defaults to null
+    // when the caller doesn't supply one, exactly like scan/chapters.
+    expect(book.source).toBeNull()
+  })
+
+  describe('source (provenance) — additive field', () => {
+    it('a book added with no `source` behaves exactly as before (null, not undefined, and JSON round-trips it as null)', async () => {
+      const store = await freshStore()
+      const book = await store.addBook({ title: 'T', author: 'A' })
+      expect(book.source).toBeNull()
+
+      const store2 = await freshStore()
+      expect(store2.findBook(book.id).source).toBeNull()
+    })
+
+    it('a pre-existing library.json written before this field existed loads unaffected (no `source` key at all, not even null)', async () => {
+      await fs.mkdir(path.dirname(libraryFile), { recursive: true })
+      const legacyBook = {
+        id: 'b-legacy',
+        title: 'Old Book',
+        author: 'A',
+        files: [],
+        coverPath: null,
+        durationSec: null,
+        genreId: null,
+        suggestedGenre: null,
+        addedAt: 1,
+        position: { fileIndex: 0, seconds: 0 }
+        // no `chapters`, no `scan`, no `source` — a book written by a
+        // version of this app before any of those fields existed.
+      }
+      await fs.writeFile(libraryFile, JSON.stringify({ genres: [], books: [legacyBook] }), 'utf-8')
+
+      const store = createLibraryStore(libraryFile)
+      await store.load()
+      const found = store.findBook('b-legacy')
+      expect(found).not.toBeNull()
+      expect(found.title).toBe('Old Book')
+      // Loaded as-is (library.js's load() doesn't re-normalize existing
+      // records through addBook's defaults) — this test pins that reading
+      // an old record never throws and the record is otherwise unchanged;
+      // `source` simply isn't present, same as `scan`/`chapters` today.
+      expect('source' in found).toBe(false)
+    })
+
+    it('a torrent-provenance source round-trips through save/load intact', async () => {
+      const store = await freshStore()
+      const source = {
+        type: 'torrent',
+        infoHash: 'abc123',
+        safety: { verdict: 'clean', hasAudio: true, skippedCount: 0, skipped: [] },
+        importedAt: 1700000000000
+      }
+      const book = await store.addBook({ title: 'T', author: 'A', source })
+
+      const store2 = await freshStore()
+      expect(store2.findBook(book.id).source).toEqual(source)
+    })
+
+    it('an import-provenance source is distinguishable from a torrent-provenance source and from a legacy (null) book', async () => {
+      const store = await freshStore()
+      const torrentBook = await store.addBook({
+        title: 'From torrent',
+        author: 'A',
+        source: {
+          type: 'torrent',
+          infoHash: 'deadbeef',
+          safety: { verdict: 'clean', hasAudio: true, skippedCount: 0, skipped: [] },
+          importedAt: 1
+        }
+      })
+      const importedBook = await store.addBook({
+        title: 'From drag & drop',
+        author: 'A',
+        source: { type: 'import', importedAt: 2 }
+      })
+      const legacyBook = await store.addBook({ title: 'No provenance', author: 'A' })
+
+      expect(store.findBook(torrentBook.id).source.type).toBe('torrent')
+      expect(store.findBook(torrentBook.id).source.safety.verdict).toBe('clean')
+      expect(store.findBook(importedBook.id).source).toEqual({ type: 'import', importedAt: 2 })
+      expect(store.findBook(importedBook.id).source.safety).toBeUndefined()
+      expect(store.findBook(legacyBook.id).source).toBeNull()
+    })
+
+    it('removing the source torrent later does not touch the already-persisted book.source (historical record, not a live reference)', async () => {
+      const store = await freshStore()
+      const source = {
+        type: 'torrent',
+        infoHash: 'now-removed-torrent',
+        safety: { verdict: 'caution', hasAudio: true, skippedCount: 2, skipped: [] },
+        importedAt: 5
+      }
+      const book = await store.addBook({ title: 'T', author: 'A', source })
+      // Nothing in library.js references the torrent client at all — the
+      // book's `source` is plain persisted data, so simply never touching
+      // it again (as a real torrent removal would) proves it survives.
+      const store2 = await freshStore()
+      expect(store2.findBook(book.id).source).toEqual(source)
+    })
   })
 
   it('addBook keeps a caller-provided id', async () => {

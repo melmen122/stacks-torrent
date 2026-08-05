@@ -5,6 +5,38 @@ import { IconPlay, IconPause, IconTrash } from './icons.jsx';
 import ConfirmDialog from './ConfirmDialog.jsx';
 import SafetyBadge from './SafetyBadge.jsx';
 
+// `torrent.discovery: 'searching' | 'no-peers' | 'connected'` — present on
+// every torrentsList()/torrentsAdd()/torrentsPause()/torrentsResume() entry
+// and each onTorrentsProgress() item. 'no-peers' covers two distinct
+// situations with no separate flag to tell them apart, so we derive which
+// one from `progress` ourselves: never got anywhere (progress === 0, dead
+// swarm) vs. was downloading and the swarm dried up mid-way (progress > 0,
+// stalled). 'connected' also covers progress === 1 (finished — needs no
+// seeders), and recovery out of 'no-peers' is immediate/non-latching the
+// instant a peer reappears, so this is re-derived fresh on every render
+// rather than cached anywhere. Optional-chained throughout so an older
+// summary lacking the field renders nothing extra.
+function discoveryMessage(torrent) {
+  const state = torrent?.discovery;
+  if (!state || state === 'connected') return null;
+
+  if (state === 'searching') {
+    return { text: 'Searching for peers…', variant: 'searching' };
+  }
+
+  if (state === 'no-peers') {
+    if ((torrent.progress || 0) > 0) {
+      return { text: 'Stalled — no peers connected.', variant: 'stalled' };
+    }
+    return {
+      text: 'No peers found — nobody appears to be sharing this torrent right now. It may be dead, or seeders may come online later.',
+      variant: 'no-peers',
+    };
+  }
+
+  return null;
+}
+
 export default function TorrentRow({ torrent }) {
   const { pause, resume, remove, safetyReports } = useTorrents();
   const [confirmingRemove, setConfirmingRemove] = useState(false);
@@ -19,6 +51,11 @@ export default function TorrentRow({ torrent }) {
   const safety = torrent.safety;
   const noAudio = !!safety && safety.hasAudio === false;
   const noAudioDanger = noAudio && safety.verdict === 'danger';
+
+  // Only surfaced while the torrent is actively trying to download (not
+  // paused, not already done — a dead swarm on a paused/finished torrent
+  // isn't actionable information right now).
+  const discovery = !torrent.paused && !torrent.done && !noAudio ? discoveryMessage(torrent) : null;
 
   return (
     <li
@@ -51,6 +88,11 @@ export default function TorrentRow({ torrent }) {
               {torrent.done && <span className="torrent-done-label">Completed</span>}
               {torrent.paused && !torrent.done && <span className="torrent-paused-label">Paused</span>}
             </div>
+            {discovery && (
+              <p className={`torrent-discovery-message torrent-discovery-${discovery.variant}`}>
+                {discovery.text}
+              </p>
+            )}
           </>
         )}
 

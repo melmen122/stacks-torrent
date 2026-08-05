@@ -30,6 +30,7 @@ import os from 'node:os'
 import { promises as fs } from 'node:fs'
 import createTorrent from 'create-torrent'
 import { createTorrentManager } from '../electron/lib/torrents.js'
+import { NO_PEERS_TIMEOUT_MS } from '../electron/lib/discoveryState.js'
 
 let root
 
@@ -196,6 +197,66 @@ describe('torrents.js completion/cleanup flow (real webtorrent client, no networ
 
     const [book] = [...library._books.values()]
     expect(book.files.some((f) => f.endsWith('01.mp3'))).toBe(true)
+
+    await manager.destroy()
+  })
+
+  // Review fix (MAJOR): resume() must reset discovery timing so a
+  // long-paused/restored torrent doesn't immediately read as 'no-peers' the
+  // instant it's resumed, before the client has had any chance to
+  // reconnect. Pure discoveryState.js tests can't reach this — the bug is
+  // specifically that `resume()` in torrents.js failed to reset the
+  // per-torrent timing state it owns — so this exercises the real thing.
+  it('resume() of a restored, long-paused torrent grants a fresh discovery grace window (no immediate "no-peers")', async () => {
+    const { torrentPath } = await buildTorrentFixture('Resume Book', {
+      '01.mp3': 'x'.repeat(50000)
+    })
+
+    const library = makeStubLibrary()
+    const torrentsFilePath = path.join(root, 'torrents-resume.json')
+    const downloadDir = path.join(root, 'resume-downloads')
+    // Simulate a persisted entry from a long-ago session: added well past
+    // the no-peers grace period, and left paused.
+    const oldAddedAt = Date.now() - NO_PEERS_TIMEOUT_MS * 10
+    await fs.mkdir(path.dirname(torrentsFilePath), { recursive: true })
+    await fs.writeFile(
+      torrentsFilePath,
+      JSON.stringify([
+        {
+          magnetOrInfoHash: torrentPath,
+          torrentFileCopyPath: torrentPath,
+          downloadDir,
+          addedAt: oldAddedAt,
+          paused: true,
+          imported: false
+        }
+      ])
+    )
+
+    const manager = createTorrentManager({
+      library,
+      coversDir: path.join(root, 'resume-covers'),
+      getWindow: () => null,
+      torrentsFilePath,
+      torrentFilesDir: path.join(root, 'resume-torrentfiles')
+    })
+
+    await manager.restorePersisted()
+    const [restored] = manager.list()
+    expect(restored.paused).toBe(true)
+    // Confirms the fixture actually exercises the old-addedAt path: while
+    // still paused, the paused exemption masks it, but discovery must NOT
+    // yet be 'connected' via any grace-period reset — i.e. this restored
+    // entry really did carry the old addedAt through to `discoveryTiming`.
+    expect(['searching', 'connected']).toContain(restored.discovery)
+
+    const resumed = await manager.resume(restored.infoHash)
+    // The real bug: without the fix, this reads 'no-peers' immediately
+    // because `resume()` never reset the old `addedAt`/`lastPeerSeenAt`.
+    expect(resumed.discovery).not.toBe('no-peers')
+
+    const [afterResume] = manager.list()
+    expect(afterResume.discovery).not.toBe('no-peers')
 
     await manager.destroy()
   })

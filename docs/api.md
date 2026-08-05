@@ -159,7 +159,8 @@ Add a torrent by magnet URI or open a native dialog to select a `.torrent` file.
   downloadSpeed: number,   // bytes/second
   numPeers: number,
   done: boolean,
-  paused: boolean
+  paused: boolean,
+  discovery: 'searching' | 'no-peers' | 'connected'
 }
 ```
 
@@ -183,6 +184,7 @@ Array<{
   numPeers: number,
   done: boolean,
   paused: boolean,
+  discovery: 'searching' | 'no-peers' | 'connected', // see below
   safety?: {               // Null until metadata arrives
     verdict: 'clean' | 'caution' | 'danger',
     hasAudio: boolean,
@@ -190,6 +192,11 @@ Array<{
   }
 }>
 ```
+
+`discovery` explains an otherwise-silent stuck torrent (e.g. a magnet whose trackers are all dead and DHT finds no peers) — it never causes anything to auto-pause/auto-remove, it's purely a status signal:
+- `'searching'` — added, metadata not yet arrived, still within the ~2 minute grace period.
+- `'no-peers'` — either no metadata and zero peers for a sustained period (swarm never found), or metadata arrived but zero peers persisted with `progress < 1` (stalled mid-download). Tell the two apart via `progress`.
+- `'connected'` — has a peer right now, or metadata has arrived and either the download is complete or the grace period hasn't elapsed. Recovers immediately (never latches) the instant a peer reappears. Never reported as `'no-peers'` while `paused` is true.
 
 **Example:**
 ```javascript
@@ -211,7 +218,8 @@ Pause a downloading torrent.
   downloadSpeed: number,   // bytes/second
   numPeers: number,
   done: boolean,
-  paused: boolean
+  paused: boolean,
+  discovery: 'searching' | 'no-peers' | 'connected'
 }
 ```
 
@@ -235,7 +243,8 @@ Resume a paused torrent.
   downloadSpeed: number,   // bytes/second
   numPeers: number,
   done: boolean,
-  paused: boolean
+  paused: boolean,
+  discovery: 'searching' | 'no-peers' | 'connected'
 }
 ```
 

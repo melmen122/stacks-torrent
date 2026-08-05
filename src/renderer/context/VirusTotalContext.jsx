@@ -88,8 +88,8 @@ export function VirusTotalProvider({ children }) {
       if (verdict === 'infected') {
         const worst = infectedFiles?.[0]?.name;
         push(
-          `⛔ Infected file detected in "${bookTitle}"${worst ? `: ${worst}` : ''}. `
-          + 'It was NOT removed automatically — open the book’s ⋯ menu in your library to remove it.',
+          `⛔ Malware detected in "${bookTitle}"${worst ? `: ${worst}` : ''}. `
+          + 'It was NOT removed automatically — see the book in your library to remove it.',
           { type: 'error', duration: 12000 },
         );
       } else if (verdict === 'suspicious') {

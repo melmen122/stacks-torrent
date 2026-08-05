@@ -48,7 +48,37 @@ interface Book {
       malicious: number | null;   // Count of engines flagging as malicious
       suspicious: number | null   // Count of engines flagging as suspicious
     }]
-  }
+  };
+  source?: TorrentSource | ImportSource | null; // Provenance, set once at import time; null/absent = legacy book (added before this field existed)
+}
+```
+
+### Source (provenance)
+
+Set once, at import time, and never mutated afterward — it survives the source torrent later being removed (it's a historical record, not a live reference). `null`/absent means either a legacy book (added before this field existed) or that no report was available at import time; the renderer must treat that the same as "unknown provenance", not as "unsafe".
+
+This is the only genuine, positive safety signal available for most audiobooks: VirusTotal (layer 2, `Book.scan`) returns `'unknown'` for essentially every personal rip, since audiobooks are almost never present in VirusTotal's database. Layer 1 — did the torrent's manifest contain any executables/archives/disguised files bundled alongside the audio, and were they kept off disk — is what `source.safety` records.
+
+```typescript
+interface TorrentSource {
+  type: 'torrent';
+  infoHash: string;        // The originating torrent's info hash (independent of whether that torrent still exists)
+  safety: {
+    verdict: 'clean' | 'caution' | 'danger';  // classifyTorrentFiles' verdict at import time (see safetyCheck.js)
+    hasAudio: boolean;
+    skippedCount: number;   // Full count of non-audio files that were NOT downloaded (uncapped)
+    skipped: [{              // Detail list, capped to the first 50 entries (MAX_SOURCE_SKIPPED_ENTRIES in bookSource.js) so a pathological torrent can't bloat library.json
+      name: string;
+      category: 'executable' | 'disguised' | 'archive' | 'companion' | 'other';
+      reason: string;
+    }]
+  };
+  importedAt: number;       // Unix timestamp (milliseconds)
+}
+
+interface ImportSource {
+  type: 'import';           // Added via manual import / drag & drop — no manifest to classify, so no safety verdict is invented
+  importedAt: number;       // Unix timestamp (milliseconds)
 }
 ```
 
@@ -96,6 +126,7 @@ interface Torrent {
   numPeers: number;      // Connected peers
   done: boolean;         // Download complete
   paused: boolean;       // User has paused this torrent
+  discovery: 'searching' | 'no-peers' | 'connected'; // Peer-discovery status (see api.md)
 }
 ```
 

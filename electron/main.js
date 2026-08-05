@@ -18,6 +18,7 @@ import { parseRange } from './lib/mediaRange.js'
 import { resolveMediaAccess } from './lib/mediaGate.js'
 import { isMagnetUri, parseMagnetFromArgv } from './lib/magnetLink.js'
 import { validateApiKey } from './lib/virusTotal.js'
+import { buildImportSource } from './lib/bookSource.js'
 import { createVirusTotalScanner } from './lib/virusTotalScanner.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -231,7 +232,13 @@ async function importGroupsToBooks(groups) {
       extraCoverCandidates: coverCandidates
     })
     if (!scanned.files.length) continue
-    const book = await library.addBook({ id: bookId, ...scanned })
+    // Provenance (docs/models.md's `Book.source`): the user supplied these
+    // files directly — no torrent manifest was classified, so no safety
+    // verdict is invented for them. `type: 'import'` still distinguishes
+    // this from a legacy book with no `source` at all (added before this
+    // field existed) — the renderer can tell "known import, no verdict"
+    // apart from "unknown provenance".
+    const book = await library.addBook({ id: bookId, ...scanned, source: buildImportSource() })
     addedBooks.push(book)
   }
   return addedBooks

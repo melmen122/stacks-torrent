@@ -58,9 +58,28 @@ After a book downloads, each audio file is SHA-256 hashed and the hash is looked
 
 **Important:**
 - VirusTotal cannot scan before downloading (no file = no hash). The app does *not* scan torrents before accepting them.
-- "Unknown" results are NOT a safety signal and do not render as "clean"—they simply mean VirusTotal has never seen this file.
+- **"Unknown" results (the norm for audiobooks):** VirusTotal has likely never seen this file. This is entirely normal for audiobooks—personal rips are almost never uploaded to VirusTotal. "Unknown" is neither a safety signal nor reassurance; it simply means no known threats. Audiobooks are safe to play even if VirusTotal returns "unknown" for every file.
 - This feature contacts an external service (hashes leave your machine); Layer 1 is entirely local.
 - Still not a replacement for OS antivirus.
+
+### Torrent Stuck or Hung?
+
+If a torrent sits at `0%` with `0 peers` for an extended time, the torrent's metadata may still be arriving, or the swarm may be dead (seeders offline or trackers defunct). The Downloads view shows your status:
+
+- **"Searching for peers…"** — Metadata is arriving and the app is looking for peers. Normal, give it ~2 minutes.
+- **"No peers found…"** — The app has waited ~2 minutes and found no seeders or leechers. The torrent swarm may be genuinely dead, or seeders may come online later. The download will resume automatically if a peer appears.
+
+Nothing is ever auto-removed or auto-paused. Paused downloads never show a "no peers" message, only active downloads.
+
+### Provenance Badge — Know Your Audiobook's Origin
+
+When a book is imported from a torrent download, the app displays its provenance (Layer 1 safety verdict) on the library card:
+
+- **✓ Audio-only download** — The torrent contained only audio files; no executables, archives, or risky companions were present.
+- **✓ Audio only — N risky file(s) skipped** — Audio-only, but the original torrent bundled suspicious files (e.g., `.exe`, `.zip`). Click the badge to see the list. The risky files never touched disk.
+- **No badge** — The book was imported manually from disk, or was added before this feature rolled out. The app has no record of how it arrived and makes no safety claim.
+
+Books added before this update won't show a provenance badge—absence of a badge means "we don't know," never "we checked and it's fine."
 
 ## Requirements
 
@@ -331,7 +350,7 @@ The app includes a comprehensive test suite covering core functionality:
 npm test
 ```
 
-Runs 194 Vitest unit tests in the `tests/` directory, including:
+Runs 231 Vitest unit tests in the `tests/` directory, including:
 - Pre-download safety classification (audio-only, executables, disguised files, archives, counts, verdicts)
 - VirusTotal response parsing (200/404/401/429, verdict mapping, cache TTL, rate limiting)
 - Magnet URI parsing (isMagnetUri, parseMagnetFromArgv)

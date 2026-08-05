@@ -84,7 +84,14 @@ export function createLibraryStore(libraryFilePath) {
       // Backward-compatible/optional (docs/PLAN4B.md): VirusTotal scan
       // state. `null` (the default) behaves as "unscanned" for any book —
       // existing books without this field are untouched.
-      scan: bookData.scan ?? null
+      scan: bookData.scan ?? null,
+      // Backward-compatible/optional: provenance, set once at import time
+      // and never mutated afterward (survives the source torrent later
+      // being removed — it's a historical record, not a live reference).
+      // `null` for any book added before this field existed, or if the
+      // caller doesn't supply one. See electron/lib/bookSource.js and
+      // docs/models.md's `Book.source` for the shape.
+      source: bookData.source ?? null
     }
     state.books.push(book)
     await save()

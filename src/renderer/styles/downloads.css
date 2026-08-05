@@ -71,6 +71,18 @@
 .torrent-safety-row {
   display: flex;
 }
+.torrent-discovery-message {
+  font-size: var(--fs-xs);
+  line-height: 1.5;
+}
+.torrent-discovery-searching {
+  color: var(--text-tertiary);
+  font-style: italic;
+}
+.torrent-discovery-no-peers,
+.torrent-discovery-stalled {
+  color: #e8b23f;
+}
 .torrent-name {
   font-weight: 600;
   font-size: var(--fs-sm);

@@ -63,24 +63,71 @@ Shadows: `--shadow-sm/md/lg` — cards use `md` on hover, dialogs/player bar use
 - **BookCard** — square cover (art or gradient+initials placeholder), hover play overlay
   (▶/⏸ depending on whether it's the active book), suggestion pill
   (`Suggested: <genre> ✓ ✕`) when `book.suggestedGenre` is set, title/author, duration,
-  genre chip, a `ScanBadge` when a VirusTotal scan result exists for the book, `⋯` menu
-  (assign genre — with a checkmark on the active one — "Scan for viruses"/"Re-scan for
-  viruses" gated on a VirusTotal key being set (see below) — or remove from library via
-  `ConfirmDialog` with an "also delete files" checkbox). A book whose scan verdict is
-  `infected` gets a persistent red-tinted card border (`.book-card-infected`, not just a
-  hover state) plus an always-visible (not dismissible) alert bar — "⛔ Infected file(s)
-  detected by VirusTotal" — with its own "Remove…" link that opens the same
-  `ConfirmDialog`/delete-files flow as the menu's remove action. Nothing is ever
-  auto-deleted.
-- **ScanBadge** — small pill reflecting a book's VirusTotal scan (`book.scan`, optionally
-  overridden by a fresher in-session result — see Interaction patterns): a pulsing dot +
-  "Scanning… (done/total)" while active, green "✓ Clean", amber "⚠ Suspicious", red "⛔
-  Infected" (bold), and — this is the one that matters most — a **neutral gray** "? Unknown
-  to VirusTotal" for files VT has no record of. `unknown` deliberately shares no styling
-  with `clean`: same treatment as a muted/neutral badge, with a title tooltip spelling out
-  that it is *not* a safety signal either way. Renders nothing at all when there's no scan
-  data yet (VT is opt-in and off by default, so most books simply show no badge until the
-  user enables it and a scan actually runs).
+  genre chip, then — in reading order — a `ProvenanceBadge` (layer-1: was the *download*
+  checked before anything hit disk), a `ScanBadge` (layer-2: was the *content* checked by
+  VirusTotal after), and finally, if it applies, the malware alert banner. That order is
+  deliberate: calmest/most-certain information first, escalating toward the loudest thing
+  last so nothing outranks the infected banner when it's present. `⋯` menu (assign genre —
+  with a checkmark on the active one — "Scan for viruses"/"Re-scan for viruses" gated on a
+  VirusTotal key being set (see below) — or remove from library via `ConfirmDialog` with an
+  "also delete files" checkbox). A book whose scan verdict is `infected` gets a persistent
+  red-tinted card border (`.book-card-infected`, not just a hover state) plus an
+  always-visible (not dismissible), high-contrast alert banner — bold red "MALWARE
+  DETECTED" title, a one-line explanation ("VirusTotal flagged a file in this book as
+  malicious. It was NOT removed automatically."), and a solid (not just underlined-text)
+  red "Remove…" button that opens the same `ConfirmDialog`/delete-files flow as the menu's
+  remove action. This banner is the *sole* infected-state indicator — `ScanBadge`
+  deliberately renders nothing for `infected`, so there's one loud signal instead of two
+  competing ones. Nothing is ever auto-deleted.
+- **ProvenanceBadge** — the layer-1 positive signal, reflecting `book.source` (persisted at
+  import time; see the Interaction-patterns entry below for the full contract and honesty
+  rules). For nearly every audiobook this is the *only* meaningful safety statement the app
+  can make, since VirusTotal returns `unknown` for almost all of them — so unlike
+  `ScanBadge`'s neutral states, this one is designed to read as confidently, visibly
+  positive when it applies: a single-line green box, "✓ Audio-only download — no
+  executables" (torrent source, clean manifest, or once benign companions are filtered out
+  — see below), or a clickable variant listing what was kept out via a reused
+  `SafetyDetails` popover (same prop shape as `SafetyBadge`'s). Renders nothing for an
+  `import`-sourced book (never classified — no claim made), a legacy/absent `book.source`
+  (unknown provenance, treated as neither safe nor unsafe), or — defense-in-depth, currently
+  unreachable since a no-audio torrent never becomes a book — `safety.hasAudio === false`.
+  The clickable variant's headline count is **risky-only**: `safety.skippedCount` includes
+  benign `companion` files (cover art, `.nfo`, `.cue`, `.m3u`, `.txt`, …), which are never
+  headlined as "risky" — 30 mp3s + 1 archive + 6 cover/companion files reads as "✓ Audio
+  only — 1 risky file skipped", not "7". Since `safety.skipped` is capped (first 50) while
+  `skippedCount` is the true total, an exact risky-only count is only derivable when the
+  list *isn't* truncated; when it is, the headline falls back to honest, non-alarmist
+  wording — "✓ Audio only — N files skipped" (the true total, but never called "risky") —
+  rather than inventing a number from a partial list. If filtering out companions brings
+  the risky count to exactly 0 (e.g. audio + cover art only), it collapses to the same
+  confident "no executables" headline as a `clean` verdict, still clickable if there's a
+  list worth showing. Kept deliberately single-line/compact (no explanatory subtext, unlike
+  `ScanBadge`'s boxes) so it doesn't turn the card into a wall of status next to
+  `ScanBadge`.
+- **ScanBadge** — a full-width status *box* (not a small pill — user feedback was that the
+  original pill read as ambiguous/easy to misread as an error) reflecting a book's
+  VirusTotal scan (`book.scan`, optionally overridden by a fresher in-session result — see
+  Interaction patterns). Every state pairs a bold headline with, where it needs one, a
+  smaller plain-English explanation line — nothing is a bare icon or a single word:
+  - `scanning` — pulsing dot + "Scanning…" or "Scanning 12/199…".
+  - `clean` — green box, "✓ No threats found — checked by VirusTotal". This is the one
+    genuinely reassuring state and it's designed to read as obviously positive.
+  - `suspicious` — amber box, "⚠ Flagged as suspicious" + "VirusTotal found this file
+    suspicious but not confirmed malicious."
+  - `unknown` — **the one that matters most**: neutral gray box (shares literally zero
+    styling — color, background, icon shape — with `clean`), headline "Not in VirusTotal's
+    database" (never a bare "?"), plus a always-visible explanation: "Normal for
+    audiobooks — VirusTotal only knows files submitted before. No known threats, but not
+    independently verified." `unknown` is the expected, default result for nearly every
+    audiobook (VT's database is built from malware samples and widely-distributed files —
+    a personal rip has almost never been submitted), so it must read as informational, not
+    as a warning and not as reassurance. The explanation is inline text, not hidden behind
+    a hover-only tooltip, precisely because a prior tooltip-only version left users unsure
+    what the badge meant.
+  - `infected` — renders nothing (see `BookCard`'s alert banner above).
+  - `error` — muted box, "Scan failed" + "Try again from the book's ⋯ menu."
+  Renders nothing at all when there's no scan data yet (VT is opt-in and off by default, so
+  most books simply show no badge until the user enables it and a scan actually runs).
 - **LibraryView** — combines Toolbar + grid, computes filtered/sorted book list, and picks the
   right `EmptyState` variant (no books at all vs. no search results).
 - **DownloadsView** — magnet-link form (input + Add + "Open .torrent file…"), a small
@@ -94,6 +141,13 @@ Shadows: `--shadow-sm/md/lg` — cards use `md` on hover, dialogs/player bar use
   downloaded. This may not be an audiobook." — and hides pause/resume (nothing to
   pause/resume at 0%), leaving only Remove; the row gets a stronger red-tinted
   border/background if the verdict was `danger` (vs. a neutral muted tint otherwise).
+  While actively downloading (not paused, not done, not the no-audio case), an optional
+  peer-discovery line explains what would otherwise look like a stuck 0%/0-peers row: an
+  italic muted "Searching for peers…" while still looking, or an amber "No peers found —
+  nobody appears to be sharing this torrent right now. It may be dead, or seeders may come
+  online later." (or, if some content already landed, the shorter "Stalled — no peers
+  connected.") once the backend gives up finding any this session. Pause/resume and Remove
+  stay fully visible/enabled in every discovery state — nothing is ever auto-removed.
 - **SafetyBadge** — small pill next to a torrent's stats reflecting `torrent.safety` from
   `torrents:list` (`{ verdict, hasAudio, skippedCount } | null`): a pulsing gray dot +
   "Checking…" while `null` (metadata still pending), green "✓ Audio only" for `clean`, amber
@@ -102,16 +156,24 @@ Shadows: `--shadow-sm/md/lg` — cards use `md` on hover, dialogs/player bar use
   `skippedCount > 0`, opening `SafetyDetails`. Only rendered at all once the field exists on
   the torrent object (`'safety' in torrent`), so it's simply absent — never stuck "Checking…"
   forever — against a backend that doesn't support the feature yet.
-- **SafetyDetails** — read-only popover (click the safety badge) listing the files a
-  torrent's safety check skipped: name, a category chip (companion/archive/
-  executable/disguised/other, color-coded by severity), and the human-readable reason.
-  Portaled to `document.body` with the same fixed-position/flip-upward/player-bar-aware/
-  viewport-clamped pattern as `IconMenu` (deliberately a separate implementation — see its
-  file comment for why). Per-file detail only ever arrives via the `onSafetyReport` event
+- **SafetyDetails** — read-only popover (click `SafetyBadge` on a torrent row, or
+  `ProvenanceBadge` on a book card — both reuse this exact component, unmodified, since
+  `book.source.safety` and `torrent.safety`/`onSafetyReport` share the same
+  `{ skippedCount, skipped: [{name, category, reason}] }` shape) listing skipped files:
+  name, a category chip (companion/archive/executable/disguised/other, color-coded by
+  severity), and the human-readable reason. Portaled to `document.body` with the same
+  fixed-position/flip-upward/player-bar-aware/viewport-clamped pattern as `IconMenu`
+  (deliberately a separate implementation — see its file comment for why). For
+  `SafetyBadge`, per-file detail only ever arrives via the `onSafetyReport` event
   (`torrents:list` only carries the summary counts), so if a torrent has a nonzero
   `skippedCount` but no event has fired yet this session (e.g. right after app start before
   the backend re-broadcasts on restore), it shows "Details aren't available for this
-  session — re-add the torrent to see specifics." rather than an empty/broken list.
+  session — re-add the torrent to see specifics." rather than an empty/broken list; for
+  `ProvenanceBadge`, the full `{skippedCount, skipped}` is already persisted on
+  `book.source.safety`, so this fallback essentially never triggers there. Because
+  `skipped` is capped (currently to the first 50) while the header count is the true,
+  uncapped total, the list ends with "Showing the first N of M." whenever the two disagree
+  — the gap between capped-list-length and true-count is never silently hidden.
 - **PlayerBar** — persistent bottom bar: cover thumb, title/author (+ "File x of y" for
   multi-file books), prev/±30s/play-pause/±30s/next transport, seek bar with elapsed/total
   time, a chapters button, volume slider, close button. Only mounted while a book is loaded.
@@ -270,6 +332,33 @@ Shadows: `--shadow-sm/md/lg` — cards use `md` on hover, dialogs/player bar use
   (Settings caption, this file) states scanning happens strictly *after* a book finishes
   downloading, using hashes of files already on disk — VT is structurally incapable of
   seeing anything earlier, since hash identity requires complete file content.
+- **Two independent, honestly-scoped safety layers, never conflated**: `ProvenanceBadge`
+  (layer 1 — was the *download itself* restricted to audio, checked against the torrent's
+  file manifest before anything hit disk) and `ScanBadge` (layer 2 — was the *downloaded
+  content* looked up on VirusTotal after) answer different questions and are never merged
+  into one status. Layer 1 is the one confident claim the app can make for nearly every
+  audiobook (`ProvenanceBadge` is designed to read as genuinely positive when it applies);
+  layer 2 is usually `unknown` for the same books (VT simply has no record of most personal
+  audiobook rips) and is designed to read as neutral, not positive, in that case. Neither
+  badge is shown for provenance/scan data the app doesn't actually have (`import`-sourced
+  or legacy books get no `ProvenanceBadge`; unscanned books get no `ScanBadge`) — absence of
+  a badge always means "we don't know," never "we checked and it's fine."
+- **Prominence scales with how actionable/alarming a state is, not with how much data
+  exists**: `ScanBadge`'s redesign (from a small pill to a full-width box with a headline +
+  explanation) exists because real user feedback was that the original pill was too easy to
+  misread as an error regardless of verdict. `unknown` — the single most common result —
+  gets the most explanatory text of any state precisely because it's the one most likely to
+  be misunderstood, not because it's the most severe.
+- **"Stuck" states get an explanation, not just a spinner**: a torrent sitting at 0%/0 peers
+  with no further context reads as broken even when it's actually still working (or
+  genuinely dead). `TorrentRow`'s discovery-state line exists to close that gap — "Searching
+  for peers…" while still looking, an explicit non-alarming explanation once the backend
+  gives up finding any ("No peers found — nobody appears to be sharing this torrent right
+  now. It may be dead, or seeders may come online later."), and a distinct "Stalled — no
+  peers connected." wording if some content already downloaded before the swarm dried up.
+  Nothing is ever auto-removed on the user's behalf; Pause/Resume/Remove all stay fully
+  available in every discovery state, unlike the (separate, more severe) no-audio case which
+  does hide pause/resume.
 
 ## Naming conventions
 - Components: PascalCase files under `components/`, one component per file.
@@ -333,3 +422,45 @@ Shadows: `--shadow-sm/md/lg` — cards use `md` on hover, dialogs/player bar use
   reveal-in-file-manager method. "Remove book" (reusing the existing delete-files-aware
   confirm flow) is implemented; flag if a reveal action should be added once/if a
   corresponding IPC method exists.
+- **"Audio-only download" positive signal — now implemented (`ProvenanceBadge`).** This was
+  previously skipped because the book data model had no field linking a book back to its
+  originating torrent's Phase-4 safety verdict, and the task said not to fake that link. The
+  backend has since persisted it for real: `book.source` (from `library:list`), one of:
+  - `{ type: 'torrent', infoHash, safety: { verdict, hasAudio, skippedCount, skipped }, importedAt }`
+    — `skippedCount` is the **true, uncapped** count; `skipped` (`[{name, category, reason}]`)
+    is capped to the first 50 (see `SafetyDetails`' truncation note above for how that gap
+    is surfaced, not hidden).
+  - `{ type: 'import', importedAt }` — user-supplied files, **no `safety` key at all**
+    (never classified) — `ProvenanceBadge` renders nothing for this case rather than
+    implying verification that didn't happen.
+  - `null`/absent — legacy book (added before this field existed) or no report available —
+    also renders nothing; treated as unknown provenance, not as unsafe.
+  Rendering rule for `type: 'torrent'`: `verdict === 'clean'`, or a **risky-only** skip
+  count of exactly 0 after excluding the benign `companion` category, gets the confident
+  "✓ Audio-only download — no executables"; otherwise a clickable "✓ Audio only — N risky
+  file(s) skipped" opening `SafetyDetails` — worded and colored as a positive/protective
+  outcome (green, "we protected you"), never as a warning, since the risky files were
+  blocked, not downloaded. The headline count deliberately excludes `companion`-category
+  skips (cover art, `.nfo`, `.cue`, `.m3u`, `.txt`, …) so an ordinary torrent with a handful
+  of cover images doesn't read as having "N risky files" — that filtering is only exact
+  when `safety.skipped` isn't truncated (the true `skippedCount` can exceed the capped
+  50-entry list); when it *is* truncated, the headline falls back to the true total worded
+  generically ("N files skipped", never "risky") rather than computing a risky count from
+  a partial list and silently under-counting. `ScanBadge`, by contrast, stays the
+  layer-2/VirusTotal signal — the two are visually and conceptually distinct
+  (`ProvenanceBadge` always renders above `ScanBadge`; see `BookCard`'s ordering note).
+- `TorrentRow.jsx`'s `discoveryMessage()` reads the confirmed field
+  `torrent.discovery: 'searching' | 'no-peers' | 'connected'` (present on every
+  `torrentsList()`/`torrentsAdd()`/`torrentsPause()`/`torrentsResume()` entry and each
+  `onTorrentsProgress()` item). There's no separate flag distinguishing "never found anyone"
+  from "was downloading, then the swarm dried up" within `'no-peers'` — both derive from the
+  same value with two different causes — so the renderer tells them apart itself via
+  `torrent.progress` (0 → "No peers found…", `> 0` → "Stalled — no peers connected."), per
+  the backend's stated semantics. `'connected'` also covers `progress === 1`. Recovery out
+  of `'no-peers'` is immediate/non-latching (the instant a peer reappears), so the message
+  is derived fresh on every render rather than cached — no stale "no peers" text can linger
+  after a peer shows up. Optional-chained so an older summary lacking the field renders
+  nothing extra. Paused torrents never report `'no-peers'` per the backend, but the renderer
+  also independently gates all discovery messaging on `!torrent.paused` as a defensive
+  belt-and-suspenders (a paused torrent isn't actively searching either, so no discovery
+  copy makes sense for it regardless).

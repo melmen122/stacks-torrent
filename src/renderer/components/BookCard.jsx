@@ -9,6 +9,7 @@ import { IconPlay, IconDots, IconCheck, IconClose } from './icons.jsx';
 import IconMenu from './IconMenu.jsx';
 import ConfirmDialog from './ConfirmDialog.jsx';
 import ScanBadge from './ScanBadge.jsx';
+import ProvenanceBadge from './ProvenanceBadge.jsx';
 
 export default function BookCard({ book, genres }) {
   const { setGenre, createGenre, removeBook } = useLibrary();
@@ -132,6 +133,8 @@ export default function BookCard({ book, genres }) {
           </span>
         </div>
 
+        <ProvenanceBadge bookTitle={book.title} source={book.source} />
+
         {scan && (
           <div className="book-scan-row">
             <ScanBadge scan={scan} progress={scanProgressInfo} />
@@ -141,9 +144,13 @@ export default function BookCard({ book, genres }) {
         {isInfected && (
           <div className="scan-alert" role="alert">
             <span className="scan-alert-icon" aria-hidden="true">⛔</span>
-            <span className="scan-alert-text">
-              Infected file{scan.files?.length > 1 ? 's' : ''} detected by VirusTotal
-            </span>
+            <div className="scan-alert-text">
+              <div className="scan-alert-title">Malware detected</div>
+              <p className="scan-alert-sub">
+                VirusTotal flagged {scan.files?.length > 1 ? 'files' : 'a file'} in this book
+                as malicious. It was NOT removed automatically.
+              </p>
+            </div>
             <button type="button" className="scan-alert-remove" onClick={() => setConfirmingRemove(true)}>
               Remove…
             </button>
