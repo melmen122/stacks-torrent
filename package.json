@@ -33,6 +33,7 @@
   "build": {
     "appId": "com.melvin.audiobooklibrary",
     "productName": "Audiobook Library",
+    "npmRebuild": false,
     "directories": {
       "output": "release"
     },

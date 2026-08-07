@@ -34,17 +34,20 @@ Builds the app for Windows (NSIS installer). No special env vars required; uses 
 
 ## Build Configuration
 
-See `package.json` and `electron-builder` settings in package.json `build` section:
+See `package.json` and `electron-builder` settings in the `build` section. Key setting:
+
+- **`npmRebuild: false`** — Skips recompilation of native modules during packaging. This is safe because all native dependencies ship N-API prebuilt binaries (ABI-stable across Node.js and Electron versions). See README's "Native Module Requirement" section for the invariant: new native dependencies must provide N-API prebuilds, or they will fail at runtime with a `NODE_MODULE_VERSION` mismatch.
 
 ```json
 {
   "build": {
     "appId": "com.melvin.audiobooklibrary",
     "productName": "Audiobook Library",
+    "npmRebuild": false,
     "mac": { "target": "dmg", "category": "public.app-category.utilities" },
     "win": { "target": "nsis" }
   }
 }
 ```
 
-These can be overridden via `electron-builder` CLI flags if needed (see `electron-builder` docs).
+Build outputs land in the `release/` directory. The `npm run dist:mac` and `npm run dist:win` commands can be run on their respective platforms; no special tools (e.g., Visual Studio on Windows) are required. See README's "Building on Windows" section for details.

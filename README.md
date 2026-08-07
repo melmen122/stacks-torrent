@@ -115,12 +115,13 @@ npm run dist:win    # Windows NSIS installer (run on Windows)
 
 ### Building on Windows
 
-Building on Windows is recommended over cross-building from macOS, since the app includes native modules that must compile for the target platform.
+Building on Windows is recommended over cross-building from macOS.
 
 **Prerequisites:**
 
 - **Node.js** 20 LTS ([nodejs.org](https://nodejs.org/))
 - **Git** ([git-scm.com](https://git-scm.com/))
+- **No Visual Studio or C++ build tools required** — all native dependencies ship prebuilt N-API binaries (ABI-stable across Node.js and Electron versions), so `npm install` fetches pre-compiled modules instead of building from source.
 
 **Steps:**
 
@@ -142,7 +143,7 @@ Install dependencies:
 npm install
 ```
 
-This takes a few minutes as native torrent modules compile. Yellow warnings are normal; errors indicate a problem.
+This downloads and installs all dependencies, including prebuilt native modules. Yellow warnings are normal; errors indicate a problem.
 
 Build the installer:
 
@@ -165,6 +166,14 @@ Audiobook Library stores its library, settings, downloads, and metadata at `%App
 **Cross-platform Builds**
 
 To build for Windows on macOS, see the [electron-builder multi-platform build guide](https://www.electron.build/multi-platform-build) for Wine or WSL setup.
+
+**Native Module Requirement**
+
+The build config sets `npmRebuild: false`, which skips electron-builder's native rebuild step. This is safe *only* because all native dependencies in this project (bufferutil, utf-8-validate, utp-native, node-datachannel, fs-native-extensions) ship N-API prebuilt binaries. N-API is ABI-stable, so the prebuilt binaries work correctly in Electron without recompilation.
+
+**Important invariant for contributors:** Any new native dependency must also ship N-API (or prebuildify) prebuilt binaries. A NAN or V8-ABI module will not work under `npmRebuild: false`—it will build and bundle silently but fail at runtime with a `NODE_MODULE_VERSION` mismatch error, not a build-time error. Before adding a native dependency, verify that it provides N-API prebuilds (check `package.json`'s `engines` and `binary` fields, or the GitHub readme).
+
+Torrent transport in this app relies on both TCP and uTP (`utp-native`), so `WebTorrent.UTP_SUPPORT` should be `true` in a correct build.
 
 ### Standalone Launch
 
