@@ -20,6 +20,10 @@ Builds the app for macOS (DMG format). No special env vars required; uses `elect
 ### `npm run dist:win`
 Builds the app for Windows (NSIS installer). No special env vars required; uses `electron-builder` configuration from `package.json`.
 
+After building, the installer is automatically verified: `7z t` decompresses and tests every entry in the embedded application payload to confirm it is not corrupt. This requires 7-Zip to be installed at `C:\Program Files\7-Zip\7z.exe` or on your PATH. If 7-Zip is not found, the build fails rather than passing a corrupt installer silently.
+
+To verify an already-built installer manually, run `npm run verify:installer`.
+
 ## Runtime
 
 **No runtime environment variables are required.** All configuration is persisted in `settings.json` (user data directory) and the IPC `settings:get` / `settings:set` API.

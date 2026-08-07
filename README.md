@@ -121,6 +121,7 @@ Building on Windows is recommended over cross-building from macOS.
 
 - **Node.js** 20 LTS ([nodejs.org](https://nodejs.org/))
 - **Git** ([git-scm.com](https://git-scm.com/))
+- **7-Zip** ([7-zip.org](https://www.7-zip.org/)) — Used to verify installer integrity after building; if not found at `C:\Program Files\7-Zip\7z.exe` or on your PATH, the build fails.
 - **No Visual Studio or C++ build tools required** — all native dependencies ship prebuilt N-API binaries (ABI-stable across Node.js and Electron versions), so `npm install` fetches pre-compiled modules instead of building from source.
 
 **Steps:**
@@ -151,9 +152,11 @@ Build the installer:
 npm run dist:win
 ```
 
+This command builds the app and then verifies that the installer's embedded application payload is not corrupt. The verification uses `7z t` to decompress and test every file in the compressed archive—if the payload is damaged, the build exits with an error rather than shipping a broken installer. To verify an already-built installer manually, run `npm run verify:installer`.
+
 **Output and Installation**
 
-The installer appears at `release\Audiobook Library-0.1.0-x64.exe`. Double-click to install.
+The installer appears at `release\Audiobook Library Setup <version>.exe`. Double-click to install.
 
 **SmartScreen Warning**
 

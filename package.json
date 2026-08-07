@@ -11,7 +11,8 @@
     "dev": "concurrently -k \"vite\" \"wait-on http://localhost:5173 && node scripts/start-dev.cjs\"",
     "build": "vite build",
     "dist:mac": "npm run build && electron-builder --mac",
-    "dist:win": "npm run build && electron-builder --win",
+    "dist:win": "npm run build && electron-builder --win && npm run verify:installer",
+    "verify:installer": "node scripts/verify-installer.mjs",
     "start": "electron .",
     "test": "vitest run --config tests/vitest.config.js"
   },
