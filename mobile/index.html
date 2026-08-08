@@ -22,7 +22,7 @@
 
     <!-- Connectivity banner: shown whenever a request fails to reach the server at all -->
     <div id="offline-banner" class="offline-banner" role="alert" hidden>
-      <span>Can&rsquo;t reach stacks. Check that your PC is on and you&rsquo;re on the same network (or connected via Tailscale).</span>
+      <span id="offline-banner-text">Can&rsquo;t reach stacks. Check that your PC is on and you&rsquo;re on the same network (or connected via Tailscale).</span>
       <button id="offline-retry" type="button" class="offline-retry">Retry</button>
     </div>
 
@@ -74,6 +74,9 @@
       <div class="library-search-row">
         <label for="library-search" class="sr-only">Search your library</label>
         <input id="library-search" type="search" placeholder="Search title or author&hellip;" class="library-search" />
+        <button id="btn-open-downloads" type="button" class="icon-btn" aria-label="Downloads" hidden>
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12" /><path d="M7 10l5 5 5-5" /><path d="M4 19.5h16" /></svg>
+        </button>
       </div>
 
       <div id="genre-filter-row" class="genre-filter-row" hidden></div>
@@ -142,6 +145,20 @@
           <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5" /><path d="M12 7.5V12l3 2" /></svg>
           <span id="sleep-label">Sleep</span>
         </button>
+        <button id="btn-download" type="button" class="pill-btn download-pill" aria-haspopup="true" aria-expanded="false" aria-controls="download-panel" hidden>
+          <svg id="download-btn-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.5v11" /><path d="M7.5 10l4.5 4.5L16.5 10" /><path d="M4.5 18.5h15" /></svg>
+          <span id="download-btn-label">Download</span>
+        </button>
+      </div>
+
+      <!-- Download bottom sheet -->
+      <div id="download-panel" class="sheet" hidden>
+        <div class="sheet-backdrop" data-close-sheet></div>
+        <div class="sheet-card" role="dialog" aria-modal="true" aria-label="Offline download">
+          <div class="sheet-handle"></div>
+          <h3 class="sheet-title">Offline download</h3>
+          <div id="download-panel-body" class="download-panel-body"></div>
+        </div>
       </div>
 
       <!-- Chapters bottom sheet -->
@@ -175,10 +192,44 @@
       </div>
     </section>
 
+    <!-- Downloads management -->
+    <section id="screen-downloads" class="screen screen-downloads" hidden aria-labelledby="downloads-heading">
+      <header class="player-header">
+        <button id="btn-downloads-back" type="button" class="icon-btn" aria-label="Back to library">
+          <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 6l-6 6 6 6" /></svg>
+        </button>
+        <span id="downloads-heading" class="player-header-label">Downloads</span>
+        <span class="downloads-header-spacer" aria-hidden="true"></span>
+      </header>
+
+      <div id="downloads-storage" class="downloads-storage"></div>
+
+      <p id="persistence-note" class="downloads-note" hidden>
+        <span id="persistence-note-text"></span>
+        <button id="persistence-note-dismiss" type="button" class="icon-btn" aria-label="Dismiss">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 6l12 12M18 6L6 18" /></svg>
+        </button>
+      </p>
+
+      <h2 class="section-title">Downloaded books</h2>
+      <ul id="downloads-list" class="downloads-list"></ul>
+      <p id="downloads-empty" class="library-empty" hidden>No downloads yet &mdash; open a book and tap Download to listen offline.</p>
+
+      <div class="downloads-actions">
+        <button id="btn-delete-all-downloads" type="button" class="btn btn-danger-ghost" hidden>Delete all downloads</button>
+      </div>
+
+      <div id="downloads-orphans-section" hidden>
+        <h2 class="section-title">No longer in your library</h2>
+        <p class="downloads-orphans-hint">These books were downloaded but have since been removed from your library on the desktop.</p>
+        <ul id="downloads-orphans-list" class="downloads-list"></ul>
+      </div>
+    </section>
+
   </div>
 
   <audio id="audio" playsinline preload="metadata"></audio>
 
-  <script src="app.js"></script>
+  <script type="module" src="app.js"></script>
 </body>
 </html>

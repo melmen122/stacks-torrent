@@ -214,7 +214,94 @@ interface VirusTotalCacheEntry {
 
 **Cache TTL:** Entries are re-checked after 30 days to catch new detections. Unknown verdicts are rechecked sooner.
 
-## File Organization
+## Mobile Offline Downloads (IndexedDB)
+
+Books downloaded for offline listening on the phone are persisted in the browser's IndexedDB database (`stacks-offline`, version 1). The phone is the only offline storage; the desktop app has no copy of downloaded books.
+
+### Object Stores
+
+```typescript
+// meta: Metadata for each downloaded book
+interface DownloadMeta {
+  bookId: string;             // Unique book ID (same as desktop library)
+  book: Book;                 // Snapshot of book details (title, author, chapters, position) at download time
+  files: [{
+    index: number;            // File index in the book
+    name: string;             // File name
+    byteLength: number | null; // Total bytes in this file (null until HEAD resolves)
+  }];
+  bytesTotal: number;         // Sum of all file byte lengths (0 if size resolution failed)
+  bytesDone: number;          // Sum of stored chunk sizes (progress)
+  status: 'none' | 'partial' | 'downloading' | 'complete' | 'error';
+  error: null | 'network' | 'quota_exceeded' | 'range_not_honored' | 'size_mismatch' | 'empty_download' | 'integrity_mismatch';
+  addedAt: number;            // Unix timestamp (milliseconds) when download was first started
+  updatedAt: number;          // Unix timestamp (milliseconds) of last progress update
+}
+
+// chunks: Raw audiobook data, stored as ~8 MB Blobs
+interface ChunkRecord {
+  key: string;                // Composite key: `${bookId}::${fileIndex}::${chunkIndex}`
+  bookId: string;
+  fileIndex: number;
+  chunkIndex: number;
+  size: number;               // Blob size in bytes (used to detect incomplete writes)
+  blob: Blob;
+}
+
+// covers: Cached cover images for downloaded books
+interface CoverRecord {
+  bookId: string;
+  blob: Blob;
+}
+
+// positionQueue: Playback positions saved while offline, queued for sync
+interface PositionQueueEntry {
+  id: number;                 // Auto-increment primary key
+  bookId: string;
+  fileIndex: number;
+  seconds: number;            // Current playback time
+  queuedAt: number;           // Unix timestamp (milliseconds) when position was saved
+}
+```
+
+### Data Flow
+
+**Download:**
+1. User taps **Download** on a book in the player.
+2. `getRemoteSize()` HEADs every file to get byte lengths.
+3. `downloadBook()` fetches each file in ~8 MB ranged chunks via `Range: bytes=start-end`.
+4. Each chunk is stored as a Blob in the `chunks` store.
+5. Book metadata and position are stored in `meta`.
+6. On completion, stored bytes are verified against summed `Content-Length` (integrity check).
+
+**Playback (Offline):**
+1. `getLocalMediaUrl()` reads all chunks for a file from the `chunks` store, reassembles them with `new Blob([...])`, and returns an object URL.
+2. The `<audio>` element plays from the object URL (no network needed).
+3. Position updates are written to `meta` and queued in `positionQueue` (if the sync POST fails).
+
+**Position Sync (Offline → Online):**
+1. When the network returns, `flushPositionQueue()` replays queued positions via POST to the desktop server.
+2. Failed requests are distinguished: 4xx errors (e.g., 404 if the book was re-imported) are treated as permanent and discarded; transient failures (401 session expired, 408 timeout, 429 rate-limited) and network errors stop the flush and retry later.
+3. Once a position is successfully posted or permanently failed, it's removed from the queue.
+
+**Orphan Handling:**
+- If a book is re-imported on the desktop, it gets a new random ID.
+- The old downloaded book's ID no longer exists in the live library.
+- `findOrphanDownloads()` identifies these by comparing download IDs against the current library.
+- The Downloads screen marks them "no longer in your library" and lets the user delete locally.
+
+### Indexes
+
+- `chunks`: `byBook` (bookId) and `byBookFile` (bookId, fileIndex) for efficient retrieval by book or file.
+- `positionQueue`: No secondary indexes (iterated linearly during flush).
+
+### Limitations & Known Behaviors
+
+- **Not unit-tested under IndexedDB:** Pure logic in `mobile/offline-core.js` has good test coverage; orchestration in `mobile/offline.js` relies on browser APIs and has manual test coverage (tracked follow-up).
+- **Secure-context-only features degrade gracefully:** `navigator.storage.persist()` and `navigator.storage.estimate()` are only available over HTTPS or `localhost`. The app shows its own download totals instead of device-wide quota when these are unavailable.
+- **Safari "Add to Home Screen" exemption:** Fullscreen web apps installed via "Add to Home Screen" on iOS are exempt from the 7-day storage eviction that applies to regular browser tabs, so offline books persist reliably.
+
+## File Organization (Desktop)
 
 ```
 userData/

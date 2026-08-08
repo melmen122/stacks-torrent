@@ -82,9 +82,104 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **Build integration** — `package.json` electron-builder config
   - `mobile/**/*` added to files array so web app ships in the installer
 
-### Known Limitations
+## [Phase 5.1] — Offline Downloads (Optional Per-Book Offline Listening)
 
-- Streaming only; no offline download to phone yet
+### Added
+
+- **Opt-in per-book offline downloads** — Users choose which books to download; streaming remains the default
+  - User taps **Download** button while playing a book
+  - Sheet shows estimated file size and a **Start download** button
+  - Download progress shown as percentage; can be paused/resumed/cancelled
+  - Once complete, books can be played entirely offline with no network
+  - Completion badge (✓) appears on the book's cover in the library
+
+- **Downloads screen** — New full-screen view for managing offline books
+  - Accessible via icon button in library toolbar (only shown when offline storage is supported)
+  - Storage usage display: "X GB of downloaded books" (or device-wide quota if `navigator.storage.estimate()` available)
+  - Persistence note for non-secure contexts: "Your downloads may be cleared by the system if storage runs low" + optional "Request persistent storage" button (iOS "Add to Home Screen" apps exempt from eviction)
+  - **Downloaded books section:** List of complete downloads; each shows title, author, size, and swipe-to-delete action
+  - **Partially-downloaded section:** In-progress or paused downloads; tap to resume, swipe to cancel
+  - **Orphaned books section:** Books no longer in the live library (e.g., re-imported with a new ID); marked "no longer in your library" with delete-only action
+  - **Delete all** button for bulk cleanup
+
+- **Playback improvements for offline books**
+  - Position updates while offline are queued in IndexedDB (positionQueue store)
+  - When network returns, queued positions are automatically replayed to the desktop
+  - A user can play offline for hours, then reconnect and see the position sync without manual action
+  - Queued positions collapse to the most recent per (bookId, fileIndex) to avoid replaying stale positions
+
+- **Core modules**
+  - `mobile/offline-core.js` — Pure planning/accounting logic (chunk planning, state derivation, position queue logic) with comprehensive unit test coverage
+  - `mobile/offline.js` — Browser orchestration: IndexedDB operations, ranged fetches, offline URL assembly, position queue flushing
+  - Tests: `tests/offlineCore.test.js` — 100+ unit tests for offline-core (planChunks, findMissingChunks, deriveDownloadState, position queue logic, etc.)
+
+- **IndexedDB schema (browser-side only)**
+  - `meta`: Download metadata (status, progress, book snapshot, file info)
+  - `chunks`: Raw ~8 MB Blobs, keyed by `bookId::fileIndex::chunkIndex` with indexes by book and by (book, file) for efficient querying
+  - `covers`: Cached cover images for downloaded books
+  - `positionQueue`: Queued position updates made while offline, replayed on reconnect
+  - See `docs/models.md` for full schema documentation
+
+- **HTTP range request support** — Existing `media:// HEAD` and range request handling was already sufficient; no server changes needed
+  - Each file is downloaded in sequential ~8 MB chunks
+  - Chunks are individually resumable, so paused downloads can resume from the last stored chunk
+  - Downloaded bytes are verified against summed `Content-Length` before marking complete
+
+- **UI enhancements**
+  - Book cover badges: ✓ for complete offline downloads, ⬇ (animated) for in-progress
+  - Player bottom sheet: **Download** button (pill style) for starting/resuming/viewing progress
+  - Graceful degradation: all offline features hidden if `isSupported()` is false (private mode, no IndexedDB, etc.)
+
+- **Orphan detection & cleanup**
+  - If a book is re-imported on the desktop, it gets a new random ID
+  - Downloads screen identifies orphans by comparing stored book IDs against the current library
+  - Users can delete orphaned downloads locally without affecting the library
+
+- **Position sync with offline queue**
+  - Direct position POSTs (when online) update the server immediately
+  - Failed POSTs are queued in `positionQueue` with timestamp
+  - `flushPositionQueue()` runs on reconnect, replaying queued entries in order
+  - Failed entries are classified as permanent (e.g., 404 if book ID changed) vs. transient (401 auth expired, 429 rate-limited); only permanent failures are discarded without retry
+  - Per-book position chains serialize calls so concurrent updates never race and invert order
+
+- **Limitations & known behaviors**
+  - Partially-downloaded books are NOT playable offline (only complete downloads)
+  - IndexedDB without Service Workers (requires HTTP range support, which is already present)
+  - `navigator.storage` APIs (persist, estimate) are secure-context-only; unavailable over plain HTTP but degraded gracefully
+  - No automated tests for IndexedDB orchestration (IndexedDB unavailable in test runner); pure logic in offline-core.js is fully tested
+
+### Enhanced
+
+- **Phone server HTTP API** — Existing endpoints already supported ranged requests for chunked downloads
+  - No new IPC endpoints needed on the desktop
+  - New mobile-side exports: `downloadBook()`, `cancelDownload()`, `deleteDownload()`, `listDownloads()`, `getDownloadState()`, `getLocalMediaUrl()`, `getOfflineLibrary()`, `flushPositionQueue()`, etc.
+
+### Known Limitations (Phase 5)
+
+- IPv4 only (no IPv6 support for bind or displayed addresses)
+- Plain HTTP (safe over Tailscale, fine on trusted LAN, do NOT expose to internet via port forwarding)
+- `navigator.storage.persist()` and `.estimate()` require HTTPS or `localhost` (unavailable on plain HTTP; degraded gracefully)
+- Safari on iOS running "Add to Home Screen" app is exempt from 7-day storage eviction but regular Safari tabs are not
+
+### Documentation
+
+- **README.md**
+  - Features: added offline downloads to headline
+  - **Offline Downloads** section: how to download, the Downloads screen, what works offline, resumable/cancellable downloads, position sync, optional Tailscale HTTPS upgrade for better storage guarantees
+  - Updated **How It Works** section to cover both streaming and offline, removed "streaming only" limitation
+
+- **docs/models.md**
+  - New **Mobile Offline Downloads (IndexedDB)** section: object stores (meta, chunks, covers, positionQueue) with full TypeScript-style schema
+  - Data flow: download process, playback from local storage, position sync queue, orphan handling
+  - Indexes and limitations
+  - File organization revised to clarify desktop userData vs. browser IndexedDB
+
+---
+
+## [Phase 5] — Listen on Your Phone (Browser Streaming + Tailscale Support)
+
+### Known Limitations (Phase 5 — now superseded by Phase 5.1 additions)
+
 - IPv4 only (no IPv6 support for bind or displayed addresses)
 - Plain HTTP (safe over Tailscale, fine on trusted LAN, do NOT expose to internet via port forwarding)
 

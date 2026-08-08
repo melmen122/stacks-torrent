@@ -270,14 +270,33 @@ By default, the server listens on your local network (LAN IP or home Wi-Fi). **D
 
 Tailscale's tunnel is always encrypted (mTLS), so plain HTTP over Tailscale is perfectly safe. You can listen to your library from anywhere—coffee shop, airport, another country—with nothing exposed to the internet.
 
-#### How It Works
+#### Offline Downloads (Optional)
 
-- **HTTP Server** — Runs inside Electron on port 8787 (configurable). Serves the static mobile web app, a JSON API (`/api/library`, `/api/books/`, `/api/position`), audio files (with HTTP range request support for seeking), and cover art.
+By default, the mobile app streams books over the network. For travel, dead zones, or when you want to save bandwidth, you can download individual books for offline listening:
+
+1. **Open a book** in the player, then tap the **Download** button (pill button in the lower toolbar).
+2. A sheet shows the file size estimate and a **Start download** button.
+3. **Tap to download**, and progress appears as a percentage. Once complete, an offline download badge (✓) appears on the book's cover.
+4. **Open the Downloads screen** (icon in the library toolbar) to see all downloaded books, storage usage, and partially-downloaded books. Tap a book to resume a paused download, or swipe to delete it locally.
+5. **Play while offline** — the book plays entirely from local storage with no network needed. Lock the screen, use AirPods, or switch apps; playback continues via the Media Session API.
+6. **Position syncs when you reconnect** — if you played offline for hours and then reconnect to the network, your current position is automatically sent to the desktop app. No manual sync needed.
+
+**Technical Details:**
+- Books are stored as ~8 MB chunks in IndexedDB (not a Service Worker, which requires HTTPS). Each chunk is individually resumable, so pausing and resuming a large download is efficient.
+- Downloaded books remain usable even if the book is re-imported on the desktop and assigned a new ID—the Downloads screen will mark it as "no longer in your library" and let you delete it.
+- Position updates are queued offline and replayed to the server once the network returns, preserving your place even during long plane rides.
+- Partially-downloaded books are not playable offline; only complete downloads can be played without a network.
+
+**Storage & Persistence:**
+- If your phone browser doesn't have `navigator.storage.persist()` available (secure-context-only; unavailable over plain HTTP), offline downloads are still stored but may be evicted by the OS if storage runs low. **Optional: use Tailscale's `tailscale serve` to put the server behind HTTPS** for a `.ts.net` domain, which enables persistent storage requests and gives you a real browser certificate. This is a quality-of-life upgrade for heavy offline users, not required for basic functionality.
+
+#### How It Works (Streaming & Offline)
+
+- **HTTP Server** — Runs inside Electron on port 8787 (configurable). Serves the static mobile web app, a JSON API (`/api/library`, `/api/books/`, `/api/position`), audio files (with HTTP range request support for seeking and chunked downloads), and cover art.
 - **Authentication** — Single shared 6-digit PIN. On first enable, a PIN + a secret are generated and stored. Sessions are cookie-based (`HMAC-SHA256(secret, pin)`), so sessions survive an app restart unless you regenerate the PIN.
-- **Position Sync** — Your playback position syncs both ways. Play on the phone, close the app, reopen on the desktop → it resumes where you left off. Same in reverse.
+- **Position Sync** — Your playback position syncs both ways, online or offline. Play on the phone, close the app, reopen on the desktop → it resumes where you left off. Same in reverse. Offline positions are queued locally and replayed when the network returns.
 - **Security** — The server validates file access: the client sends a book ID + file index, and the server resolves and re-validates the path against the audio-extension allowlist before streaming bytes. A `Host` header check prevents DNS-rebinding attacks; the server allows IP addresses, `localhost`, and Tailscale domains (`*.ts.net`).
 - **Limitations:**
-  - Streaming only—no offline downloads to the phone yet.
   - IPv4 only.
   - Plain HTTP (fine over Tailscale or trusted LAN; never expose to the open internet).
 
