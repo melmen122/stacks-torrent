@@ -16,6 +16,7 @@ A local-only Electron desktop app (Mac + Windows) for downloading audiobooks via
 - **Chapter Navigation** — For single-file audiobooks with embedded chapters (m4b, m4a, mp3), jump directly to any chapter via the player's chapter menu. Multi-file books derive chapters from files.
 - **Settings** — Change the default download folder for new torrents; existing and in-progress downloads keep their original location. Set as default magnet link handler.
 - **Set as Default Magnet Handler** — Clicking a magnet link in your browser or file manager opens Audiobook Library and starts the download. One-click registration from Settings.
+- **Listen on your phone** — Stream your audiobook library to an iPhone, iPad, or browser on your LAN/Tailscale. No app to install—just open a link in Safari (or any browser), enter a PIN once, and access your full library with playback controls, seeking, and position sync both ways.
 - **Search & Sort** — Filter library by title/author; sort by recently added, title A–Z, or author A–Z.
 - **Safety Features** — Two complementary layers protect against malicious files: local pre-download filtering blocks executables and archives before they ever touch disk, while optional VirusTotal scanning provides post-download verification via file hashes (see **Safety** section below).
 
@@ -228,6 +229,70 @@ Simply drag audiobook folders or individual audio files onto the app window to i
 3. Your position is saved automatically every ~5 seconds, on pause, when switching files, and when closing the player.
 4. Reopening the same book resumes from where you left off.
 
+### Listen on Your Phone
+
+Stream your audiobook library to an iPhone, iPad, or any browser on your network or via Tailscale. Your desktop app runs a small HTTP server that serves the library as a web app—no App Store app, no installation needed.
+
+#### Quick Start
+
+1. Open Settings (⚙️ icon in sidebar) and find the "Listen on your phone" section.
+2. Click **Enable**, and a 6-digit PIN will be generated. The server starts immediately.
+3. **On your phone:** Open Safari (or any browser) and navigate to one of the addresses shown in Settings.
+4. Enter the PIN, and your library appears with full playback controls (play/pause, seek, ±30s, chapters, volume).
+5. Click the book title to return to the library, or bookmark the link for quick access.
+
+#### "Add to Home Screen" (iOS)
+
+After logging in, you can install the web app as a fullscreen icon:
+
+1. In Safari, tap the **Share** button (⬆️ in bottom toolbar).
+2. Scroll down and tap **Add to Home Screen**.
+3. Name it "Audiobooks" (or your choice), then tap **Add**.
+4. The icon appears on your home screen. Open it to resume playback.
+5. Lock-screen playback controls, AirPods controls, and CarPlay integration all work via the Media Session API—pause on the lock screen, and playback resumes in the app.
+
+#### Listening from Outside Your House
+
+By default, the server listens on your local network (LAN IP or home Wi-Fi). **Do NOT use port forwarding to expose the HTTP server to the internet**—plain HTTP is not safe over the open internet, and there's no authentication beyond a 6-digit PIN.
+
+**Recommended: Use Tailscale (free, encrypted tunnel):**
+
+1. **On your PC:**
+   - Install [Tailscale](https://tailscale.com/download) and sign into your personal account.
+   - Enable the server in Audiobook Library Settings (if not already enabled).
+   - Note the **Tailscale** address shown in Settings (looks like `http://yourdevice.ts.net:8787`).
+
+2. **On your iPhone/iPad:**
+   - Install [Tailscale](https://tailscale.com/download) from the App Store.
+   - Sign into the **same Tailscale account**.
+   - Open Safari and navigate to the Tailscale address from step 1 (e.g., `http://mypc.ts.net:8787`).
+   - Enter the PIN from Settings and you're connected—your phone sees the desktop PC as if you were on the same Wi-Fi, but the tunnel is encrypted and secure.
+
+Tailscale's tunnel is always encrypted (mTLS), so plain HTTP over Tailscale is perfectly safe. You can listen to your library from anywhere—coffee shop, airport, another country—with nothing exposed to the internet.
+
+#### How It Works
+
+- **HTTP Server** — Runs inside Electron on port 8787 (configurable). Serves the static mobile web app, a JSON API (`/api/library`, `/api/books/`, `/api/position`), audio files (with HTTP range request support for seeking), and cover art.
+- **Authentication** — Single shared 6-digit PIN. On first enable, a PIN + a secret are generated and stored. Sessions are cookie-based (`HMAC-SHA256(secret, pin)`), so sessions survive an app restart unless you regenerate the PIN.
+- **Position Sync** — Your playback position syncs both ways. Play on the phone, close the app, reopen on the desktop → it resumes where you left off. Same in reverse.
+- **Security** — The server validates file access: the client sends a book ID + file index, and the server resolves and re-validates the path against the audio-extension allowlist before streaming bytes. A `Host` header check prevents DNS-rebinding attacks; the server allows IP addresses, `localhost`, and Tailscale domains (`*.ts.net`).
+- **Limitations:**
+  - Streaming only—no offline downloads to the phone yet.
+  - IPv4 only.
+  - Plain HTTP (fine over Tailscale or trusted LAN; never expose to the open internet).
+
+#### Configuring the Port
+
+By default, the server listens on port **8787**. To change it:
+
+1. Open Settings → "Listen on your phone".
+2. Click the port field, enter a new port (1024–65535), and press Enter.
+3. The server restarts on the new port. All phones will need to reconnect.
+
+#### Regenerating the PIN
+
+Click **Regenerate PIN** in Settings to generate a new 6-digit code. All currently signed-in phones are automatically signed out—they'll be prompted to re-enter the PIN on their next request.
+
 ### Search & Filter
 
 Use the search box in the toolbar to filter by title or author. Sort by recently added, title A–Z, or author A–Z.
@@ -314,6 +379,8 @@ electron/
     scanQueue.js                  # Rate-limited scan queue with caching (4 req/min, 30d TTL)
     virusTotalCache.js            # Local cache persistence (vt-cache.json)
     virusTotalScanner.js          # Hash calculation & background scanning orchestration
+    phoneServer.js                # HTTP server for streaming library to phone/browser (LAN/Tailscale)
+    mimeTypes.js                  # MIME type mapping for media:// protocol and phone server
 
 src/renderer/
   index.html                      # Entry point
@@ -323,7 +390,7 @@ src/renderer/
   components/
     Sidebar, LibraryView, DownloadsView, PlayerBar, BookCard
     ChapterMenu.jsx               # Chapter selection popover
-    SettingsView.jsx              # Settings panel (download directory, magnet handler, VirusTotal key)
+    SettingsView.jsx              # Settings panel (download directory, magnet handler, VirusTotal key, phone server)
     DropImportOverlay.jsx         # Drag & drop import UI
     MagnetNavigator.jsx           # Non-visual magnet link handler (cold-start + warm-path)
     SafetyBadge.jsx               # Pre-download safety verdict badge (clean/caution/danger)
@@ -340,6 +407,13 @@ src/renderer/
     color.js                      # Gradient & initials for placeholder art
     format.js                     # Time & file size formatting
     media.js                      # media:// URL builder
+
+mobile/                           # Static web app for phone/browser listening
+  index.html                      # Entry point
+  app.js                          # Mobile client JavaScript (API calls, Media Session API, UI)
+  app.css                         # Mobile-responsive styles
+  manifest.webmanifest            # PWA manifest for "Add to Home Screen"
+  icons/                          # App icons (SVG + PNG for various sizes)
 
 tests/
   *.test.js                       # Vitest unit tests (byte-range, grouping, persistence, etc.)
@@ -362,13 +436,14 @@ The app includes a comprehensive test suite covering core functionality:
 npm test
 ```
 
-Runs 231 Vitest unit tests in the `tests/` directory, including:
+Runs 287 Vitest unit tests in the `tests/` directory, including:
 - Pre-download safety classification (audio-only, executables, disguised files, archives, counts, verdicts)
 - VirusTotal response parsing (200/404/401/429, verdict mapping, cache TTL, rate limiting)
 - Magnet URI parsing (isMagnetUri, parseMagnetFromArgv)
 - Byte-range parsing for media streaming (seek without buffering)
 - Import grouping logic (single books, multi-file books, disc layouts)
 - Torrent persistence (save/restore state across restarts)
+- Phone server API, authentication, session management, media streaming with range requests
 - Library CRUD operations
 - Natural sort order (A–Z by title/author)
 

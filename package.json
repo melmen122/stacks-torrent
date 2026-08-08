@@ -41,6 +41,7 @@
     "files": [
       "dist/**/*",
       "electron/**/*",
+      "mobile/**/*",
       "package.json"
     ],
     "protocols": [

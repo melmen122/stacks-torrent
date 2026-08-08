@@ -413,6 +413,116 @@ if (result.queued) {
 }
 ```
 
+## Phone Server
+
+Stream the audiobook library to an iPhone, iPad, or browser on the LAN/Tailscale. The server runs inside Electron on a configurable port (default 8787) and authenticates via a 6-digit PIN.
+
+### `phoneGetStatus()`
+Retrieve the current phone server status (enabled/running state, port, PIN, error, and reachable addresses).
+
+**Returns:**
+```typescript
+{
+  enabled: boolean,     // Whether the server is enabled in settings
+  running: boolean,     // Whether the server is actually listening (may be false if bind failed)
+  port: number,         // Configured or actual port (1024–65535)
+  pin: string | null,   // Current 6-digit PIN, or null if not yet generated
+  error: string | null, // Error message if running is false (e.g., "EADDRINUSE")
+  urls: [{              // Reachable addresses (empty if not running)
+    label: string,      // "Tailscale" or "Wi-Fi / LAN"
+    url: string         // Full URL (e.g., "http://192.168.1.10:8787")
+  }]
+}
+```
+
+**Example:**
+```javascript
+const status = await window.api.phoneGetStatus();
+console.log('Server running on', status.urls);
+console.log('PIN:', status.pin);
+```
+
+### `phoneSetEnabled(enabled)`
+Enable or disable the phone server. Enabling generates a PIN and secret if not already present, then starts the server. Disabling stops it.
+
+**Parameters:**
+- `enabled` (boolean) — Whether to enable or disable the server
+
+**Returns:**
+```typescript
+// Same shape as phoneGetStatus()
+{
+  enabled: boolean,
+  running: boolean,
+  port: number,
+  pin: string | null,
+  error: string | null,
+  urls: [{ label: string, url: string }]
+}
+```
+
+**Example:**
+```javascript
+const status = await window.api.phoneSetEnabled(true);
+if (status.running) {
+  console.log('Server started on', status.urls[0].url);
+} else {
+  console.error('Failed to start server:', status.error);
+}
+```
+
+### `phoneSetPort(port)`
+Change the server's listening port. Requires the server to be enabled. If the server is currently running, it restarts on the new port.
+
+**Parameters:**
+- `port` (number) — Port number (1024–65535)
+
+**Returns:**
+```typescript
+// Same shape as phoneGetStatus()
+{
+  enabled: boolean,
+  running: boolean,
+  port: number,
+  pin: string | null,
+  error: string | null,
+  urls: [{ label: string, url: string }]
+}
+```
+
+**Example:**
+```javascript
+const status = await window.api.phoneSetPort(9000);
+if (status.error) {
+  console.error('Failed to change port:', status.error);
+} else {
+  console.log('Server now listening on port', status.port);
+}
+```
+
+### `phoneRegeneratePin()`
+Generate a new 6-digit PIN and a new secret. All currently authenticated phone sessions are invalidated (new token no longer matches).
+
+**Returns:**
+```typescript
+// Same shape as phoneGetStatus()
+{
+  enabled: boolean,
+  running: boolean,
+  port: number,
+  pin: string | null,
+  error: string | null,
+  urls: [{ label: string, url: string }]
+}
+```
+
+**Example:**
+```javascript
+const status = await window.api.phoneRegeneratePin();
+console.log('New PIN:', status.pin);
+console.log('All phones must re-authenticate');
+```
+
 ## System
 
 ### `systemSetDefaultMagnetHandler()`
@@ -512,6 +622,16 @@ Shortcuts to the VirusTotal API IPC calls (see [Virus Scanning](#virus-scanning-
 - `onScanProgress(callback)` → same as subscribing to `virusTotal:scan-progress` event
 - `onScanComplete(callback)` → same as subscribing to `virusTotal:scan-complete` event
 - `onSafetyReport(callback)` → same as subscribing to `torrents:safety-report` event
+
+### Phone Server Preload Methods
+
+Shortcuts to the Phone Server API IPC calls (see [Phone Server](#phone-server) section for details):
+
+- `phoneGetStatus()` → same as `ipcRenderer.invoke('phone:getStatus')`
+- `phoneSetEnabled(enabled)` → same as `ipcRenderer.invoke('phone:setEnabled', enabled)`
+- `phoneSetPort(port)` → same as `ipcRenderer.invoke('phone:setPort', port)`
+- `phoneRegeneratePin()` → same as `ipcRenderer.invoke('phone:regeneratePin')`
+- `onPhoneStatusChanged(callback)` → same as subscribing to `phone:status-changed` event
 
 ## Events
 
@@ -637,6 +757,36 @@ Fired when the library changes (book added/removed, genre renamed, etc.).
 window.api.onLibraryChanged(() => {
   console.log('Library updated; refetch books/genres');
 });
+```
+
+### `onPhoneStatusChanged(callback)`
+Fired when the phone server status changes (enabled/disabled, started/stopped, PIN regenerated, port changed, or error occurs).
+
+**Callback:**
+```typescript
+(status: {
+  enabled: boolean,
+  running: boolean,
+  port: number,
+  pin: string | null,
+  error: string | null,
+  urls: [{ label: string, url: string }]
+}) => void
+```
+
+**Example:**
+```javascript
+const unsubscribe = window.api.onPhoneStatusChanged((status) => {
+  if (status.running) {
+    console.log('Phone server is live on', status.urls[0].url);
+  } else if (status.error) {
+    console.error('Phone server error:', status.error);
+  } else {
+    console.log('Phone server stopped');
+  }
+});
+// Later:
+unsubscribe();
 ```
 
 ### `onMagnetReceived(callback)`

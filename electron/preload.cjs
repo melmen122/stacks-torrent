@@ -64,6 +64,12 @@ contextBridge.exposeInMainWorld('api', {
   virusTotalSetKey: (key) => ipcRenderer.invoke('virusTotal:setKey', key),
   virusTotalScanBook: (bookId) => ipcRenderer.invoke('virusTotal:scanBook', bookId),
 
+  // Phone server (listen from an iPhone/iPad on the LAN/Tailscale)
+  phoneGetStatus: () => ipcRenderer.invoke('phone:getStatus'),
+  phoneSetEnabled: (enabled) => ipcRenderer.invoke('phone:setEnabled', enabled),
+  phoneSetPort: (port) => ipcRenderer.invoke('phone:setPort', port),
+  phoneRegeneratePin: () => ipcRenderer.invoke('phone:regeneratePin'),
+
   // Events (return an unsubscribe function)
   onTorrentsProgress: (callback) => subscribe('torrents:progress', callback),
   onTorrentsDone: (callback) => subscribe('torrents:done', callback),
@@ -74,5 +80,7 @@ contextBridge.exposeInMainWorld('api', {
   onSafetyReport: (callback) => subscribe('torrents:safety-report', callback),
   // VirusTotal post-download scanning (docs/PLAN4B.md)
   onScanProgress: (callback) => subscribe('virusTotal:scan-progress', callback),
-  onScanComplete: (callback) => subscribe('virusTotal:scan-complete', callback)
+  onScanComplete: (callback) => subscribe('virusTotal:scan-complete', callback),
+  // Phone server status (enabled/running/port/pin/error/urls) changes
+  onPhoneStatusChanged: (callback) => subscribe('phone:status-changed', callback)
 })

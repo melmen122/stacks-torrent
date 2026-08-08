@@ -1,7 +1,15 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { api } from '../api.js';
 import { useToast } from '../context/ToastContext.jsx';
 import { useVirusTotal } from '../context/VirusTotalContext.jsx';
+import ConfirmDialog from './ConfirmDialog.jsx';
+
+function phoneErrorMessage(error) {
+  if (!error) return null;
+  if (error === 'port_in_use') return "That port is already in use — try a different one.";
+  if (error === 'invalid_port') return 'Pick a port between 1024 and 65535.';
+  return `Something went wrong (${error}).`;
+}
 
 export default function SettingsView() {
   const { push } = useToast();
@@ -16,6 +24,15 @@ export default function SettingsView() {
 
   const [vtKeyInput, setVtKeyInput] = useState('');
   const [vtBusy, setVtBusy] = useState(false);
+
+  const [phoneStatus, setPhoneStatus] = useState(null);
+  const [phoneLoading, setPhoneLoading] = useState(true);
+  const [enableBusy, setEnableBusy] = useState(false);
+  const [portBusy, setPortBusy] = useState(false);
+  const [pinBusy, setPinBusy] = useState(false);
+  const [confirmingRegeneratePin, setConfirmingRegeneratePin] = useState(false);
+  const [portDraft, setPortDraft] = useState('');
+  const portEditingRef = useRef(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -50,6 +67,99 @@ export default function SettingsView() {
       });
     return () => { cancelled = true; };
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!api?.phoneGetStatus) {
+      setPhoneLoading(false);
+      return undefined;
+    }
+    api.phoneGetStatus()
+      .then((status) => {
+        if (cancelled) return;
+        setPhoneStatus(status);
+        if (!portEditingRef.current) setPortDraft(String(status?.port ?? ''));
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (!cancelled) setPhoneLoading(false);
+      });
+    const unsubscribe = api.onPhoneStatusChanged?.((status) => {
+      setPhoneStatus(status);
+      if (!portEditingRef.current) setPortDraft(String(status?.port ?? ''));
+    });
+    return () => {
+      cancelled = true;
+      unsubscribe?.();
+    };
+  }, []);
+
+  const togglePhoneEnabled = async () => {
+    if (!api?.phoneSetEnabled || enableBusy || !phoneStatus) return;
+    const next = !phoneStatus.enabled;
+    setEnableBusy(true);
+    try {
+      const status = await api.phoneSetEnabled(next);
+      setPhoneStatus(status);
+      push(next ? 'Phone access enabled' : 'Phone access disabled', { type: next ? 'success' : 'info' });
+    } catch (err) {
+      push(err?.message || "Couldn't change phone access.", { type: 'error' });
+    } finally {
+      setEnableBusy(false);
+    }
+  };
+
+  const savePhonePort = async () => {
+    if (!api?.phoneSetPort || portBusy) return;
+    const port = Number(portDraft);
+    if (!Number.isInteger(port) || port < 1024 || port > 65535) {
+      push('Enter a port between 1024 and 65535.', { type: 'error' });
+      return;
+    }
+    setPortBusy(true);
+    try {
+      const status = await api.phoneSetPort(port);
+      setPhoneStatus(status);
+      portEditingRef.current = false;
+      setPortDraft(String(status?.port ?? port));
+      if (status?.error) {
+        push(phoneErrorMessage(status.error), { type: 'error' });
+      } else {
+        push('Port updated', { type: 'success' });
+      }
+    } catch (err) {
+      push(err?.message || "That port couldn't be used — try another.", { type: 'error' });
+    } finally {
+      setPortBusy(false);
+    }
+  };
+
+  const regeneratePhonePin = async () => {
+    if (!api?.phoneRegeneratePin) return;
+    setConfirmingRegeneratePin(false);
+    setPinBusy(true);
+    try {
+      const status = await api.phoneRegeneratePin();
+      setPhoneStatus(status);
+      push('New code generated — phones will need to sign in again', { type: 'success' });
+    } catch (err) {
+      push(err?.message || "Couldn't generate a new code.", { type: 'error' });
+    } finally {
+      setPinBusy(false);
+    }
+  };
+
+  const copyPhoneUrl = async (url) => {
+    try {
+      await navigator.clipboard.writeText(url);
+      push('Address copied', { type: 'success' });
+    } catch {
+      push("Couldn't copy — copy the address manually.", { type: 'error' });
+    }
+  };
+
+  const portDirty = phoneStatus && portDraft !== String(phoneStatus.port);
+  const phoneLive = !!phoneStatus?.enabled && !!phoneStatus?.running && !phoneStatus?.error;
 
   const changeDownloadDir = async () => {
     if (!api?.settingsChooseDownloadDir || busy) return;
@@ -256,6 +366,133 @@ export default function SettingsView() {
           antivirus. Your key is stored locally in plain text on this computer.
         </p>
       </section>
+
+      <section className="settings-section">
+        <h2 className="settings-section-title">Listen on your phone</h2>
+
+        <div className="settings-row">
+          <div className="settings-row-text">
+            <div className="settings-row-label">Phone access</div>
+            <div
+              className={`settings-row-value ${
+                phoneLoading
+                  ? ''
+                  : phoneStatus?.error
+                    ? 'settings-status-warn'
+                    : phoneLive
+                      ? 'settings-status-ok'
+                      : ''
+              }`}
+            >
+              {phoneLoading
+                ? 'Loading…'
+                : !phoneStatus
+                  ? 'Unavailable'
+                  : phoneStatus.error
+                    ? phoneErrorMessage(phoneStatus.error)
+                    : !phoneStatus.enabled
+                      ? 'Disabled'
+                      : phoneStatus.running
+                        ? 'Enabled — running'
+                        : 'Enabled — starting…'}
+            </div>
+          </div>
+          <label className="settings-toggle" aria-label="Enable phone access">
+            <input
+              type="checkbox"
+              checked={!!phoneStatus?.enabled}
+              onChange={togglePhoneEnabled}
+              disabled={enableBusy || phoneLoading || !phoneStatus || !api?.phoneSetEnabled}
+            />
+            <span className="settings-toggle-track" aria-hidden="true">
+              <span className="settings-toggle-thumb" />
+            </span>
+          </label>
+        </div>
+
+        <div className="settings-row">
+          <div className="settings-row-text">
+            <div className="settings-row-label">Port</div>
+            <div className="settings-row-value">Used for the addresses below on your home network.</div>
+          </div>
+        </div>
+        <div className="vt-key-row">
+          <input
+            type="number"
+            inputMode="numeric"
+            aria-label="Phone server port"
+            min={1024}
+            max={65535}
+            value={portDraft}
+            onFocus={() => { portEditingRef.current = true; }}
+            onChange={(e) => setPortDraft(e.target.value)}
+            disabled={portBusy || phoneLoading || !phoneStatus}
+          />
+          <button
+            type="button"
+            className="btn btn-ghost"
+            onClick={savePhonePort}
+            disabled={portBusy || phoneLoading || !phoneStatus || !portDirty || !api?.phoneSetPort}
+          >
+            Save
+          </button>
+        </div>
+
+        {phoneLive && phoneStatus?.pin && (
+          <div className="settings-row">
+            <div className="settings-row-text">
+              <div className="settings-row-label">Sign-in code</div>
+              <div className="settings-row-value phone-pin">{phoneStatus.pin}</div>
+            </div>
+            <button
+              type="button"
+              className="btn btn-ghost"
+              onClick={() => setConfirmingRegeneratePin(true)}
+              disabled={pinBusy || !api?.phoneRegeneratePin}
+            >
+              Generate new code
+            </button>
+          </div>
+        )}
+
+        {phoneLive && Array.isArray(phoneStatus?.urls) && phoneStatus.urls.length > 0 && (
+          <ul className="phone-url-list">
+            {phoneStatus.urls.map((entry) => (
+              <li key={entry.url} className="phone-url-row">
+                <div className="phone-url-text">
+                  <div className="phone-url-label">{entry.label}</div>
+                  <div className="phone-url-value">{entry.url}</div>
+                </div>
+                <button
+                  type="button"
+                  className="btn btn-ghost"
+                  onClick={() => copyPhoneUrl(entry.url)}
+                >
+                  Copy
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+
+        <p className="settings-caption">
+          Enter the sign-in code on your iPhone or iPad in Safari, then open the address that
+          matches your network — the home-network address only works on the same Wi-Fi, while a
+          Tailscale address works from anywhere your device is signed into your tailnet. For the
+          best experience, add the page to your home screen from Safari's share menu.
+        </p>
+      </section>
+
+      {confirmingRegeneratePin && (
+        <ConfirmDialog
+          title="Generate a new sign-in code?"
+          message="Any phones already signed in will be signed out and need the new code to reconnect."
+          confirmLabel="Generate new code"
+          danger
+          onCancel={() => setConfirmingRegeneratePin(false)}
+          onConfirm={regeneratePhonePin}
+        />
+      )}
     </div>
   );
 }

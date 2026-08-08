@@ -78,3 +78,99 @@
 .vt-key-row input:disabled {
   opacity: 0.6;
 }
+.vt-key-row input[type='number'] {
+  flex: 0 0 140px;
+  font-family: inherit;
+  letter-spacing: normal;
+}
+
+/* Toggle switch (enable/disable phone access) */
+.settings-toggle {
+  position: relative;
+  display: inline-flex;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.settings-toggle input {
+  position: absolute;
+  inset: 0;
+  width: 44px;
+  height: 26px;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+.settings-toggle input:disabled {
+  cursor: not-allowed;
+}
+.settings-toggle-track {
+  width: 44px;
+  height: 26px;
+  border-radius: var(--radius-full);
+  background: var(--bg-elevated-2);
+  border: 1px solid var(--border-strong);
+  transition: background var(--transition-fast), border-color var(--transition-fast);
+  display: inline-flex;
+  align-items: center;
+  padding: 2px;
+}
+.settings-toggle-thumb {
+  width: 18px;
+  height: 18px;
+  border-radius: var(--radius-full);
+  background: var(--text-secondary);
+  transition: transform var(--transition-fast), background var(--transition-fast);
+}
+.settings-toggle input:checked + .settings-toggle-track {
+  background: var(--accent-muted-bg);
+  border-color: var(--accent);
+}
+.settings-toggle input:checked + .settings-toggle-track .settings-toggle-thumb {
+  transform: translateX(18px);
+  background: var(--accent);
+}
+.settings-toggle input:focus-visible + .settings-toggle-track {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.settings-toggle input:disabled + .settings-toggle-track {
+  opacity: 0.5;
+}
+
+.phone-pin {
+  font-family: monospace;
+  font-size: var(--fs-lg);
+  letter-spacing: 0.08em;
+}
+
+.phone-url-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.phone-url-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  background: var(--bg-elevated-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: var(--space-2) var(--space-3);
+}
+.phone-url-text {
+  min-width: 0;
+}
+.phone-url-label {
+  font-size: var(--fs-xs);
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 2px;
+}
+.phone-url-value {
+  font-size: var(--fs-sm);
+  color: var(--text-primary);
+  font-family: monospace;
+  overflow-wrap: anywhere;
+}

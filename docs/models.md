@@ -164,9 +164,13 @@ Application configuration persisted to `settings.json` in the user data director
 
 ```typescript
 interface Settings {
-  downloadDir: string;      // Absolute path where torrents download (default: userData/downloads)
-  virusTotalApiKey?: string | null;  // VirusTotal API key (optional; null = disabled)
-  virusTotalEnabled?: boolean;       // Whether VirusTotal scanning is enabled (default: false)
+  downloadDir: string;              // Absolute path where torrents download (default: userData/downloads)
+  virusTotalApiKey?: string | null; // VirusTotal API key (optional; null = disabled)
+  virusTotalEnabled?: boolean;      // Whether VirusTotal scanning is enabled (default: false)
+  phoneServerEnabled?: boolean;     // Whether the phone server is enabled (default: false)
+  phoneServerPort?: number;         // Phone server listening port (default: 8787, valid: 1024–65535)
+  phoneServerPin?: string | null;   // Current 6-digit PIN (null until first enable)
+  phoneServerSecret?: string | null;// Secret for session token HMAC (null until first enable)
 }
 ```
 
@@ -174,6 +178,12 @@ interface Settings {
 - The API key is stored in plaintext in `settings.json` on disk (acceptable for a personal local app).
 - The key is NEVER logged, never sent to the renderer process, and never included in error messages.
 - Setting the key to `null` disables VirusTotal scanning.
+
+**Phone Server PIN and Secret Handling:**
+- Generated automatically on first enable (random 6-digit PIN and random 32-byte hex secret).
+- Persisted to `settings.json` so sessions survive an app restart.
+- Regenerating the PIN invalidates all existing sessions (new secret means all previously-issued session cookies no longer match the HMAC).
+- Never logged or sent to the renderer; only the PIN (not the secret) is displayed in the UI for user entry on the phone.
 
 ## Playback Resume
 

@@ -16,6 +16,8 @@ import { scanBookFiles, isExternalCoverName, ALLOWED_AUDIO_EXTENSIONS } from './
 import { groupImportPaths } from './lib/importGrouping.js'
 import { parseRange } from './lib/mediaRange.js'
 import { resolveMediaAccess } from './lib/mediaGate.js'
+import { mimeTypeFor } from './lib/mimeTypes.js'
+import { createPhoneServer } from './lib/phoneServer.js'
 import { isMagnetUri, parseMagnetFromArgv } from './lib/magnetLink.js'
 import { validateApiKey } from './lib/virusTotal.js'
 import { buildImportSource } from './lib/bookSource.js'
@@ -89,6 +91,7 @@ let library = null
 let torrentManager = null
 let settingsCache = null
 let virusTotalScanner = null
+let phoneServer = null
 
 let userDataDir = ''
 let libraryFilePath = ''
@@ -109,6 +112,12 @@ function broadcastLibraryChanged() {
   }
 }
 
+function broadcastPhoneStatus(status) {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('phone:status-changed', status)
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Settings (userData/settings.json)
 // ---------------------------------------------------------------------------
@@ -117,7 +126,18 @@ function broadcastLibraryChanged() {
 // (see `virusTotal:setKey`). Never logged, never sent to the renderer as
 // itself — only `hasKey`/`enabled` booleans ever cross the IPC boundary
 // (see `virusTotal:getSettings`).
-const DEFAULT_SETTINGS = { virusTotalEnabled: false, virusTotalApiKey: null }
+const DEFAULT_SETTINGS = {
+  virusTotalEnabled: false,
+  virusTotalApiKey: null,
+  // Phone server (listen from an iPhone/iPad on the LAN/Tailscale — see
+  // electron/lib/phoneServer.js). PIN + secret are generated lazily the
+  // first time the server is enabled, then persisted so sessions survive an
+  // app restart.
+  phoneServerEnabled: false,
+  phoneServerPort: 8787,
+  phoneServerPin: null,
+  phoneServerSecret: null
+}
 
 async function loadSettings() {
   try {
@@ -147,7 +167,12 @@ async function saveSettings(patch) {
  * `virusTotal:getSettings` (booleans only, never the key itself).
  */
 function stripSecretSettings(settings) {
-  const { virusTotalApiKey, ...safeSettings } = settings ?? {}
+  // `phoneServerSecret` (the HMAC key sessions are derived from) must never
+  // reach the renderer via the generic settings channel — only via the
+  // dedicated `phone:getStatus`, and even there only `pin`/`port`/etc, never
+  // the secret itself. The PIN itself is fine to strip here too since the
+  // desktop UI reads it from `phone:getStatus`, not `settings:get`.
+  const { virusTotalApiKey, phoneServerSecret, phoneServerPin, ...safeSettings } = settings ?? {}
   return safeSettings
 }
 
@@ -247,32 +272,6 @@ async function importGroupsToBooks(groups) {
 // ---------------------------------------------------------------------------
 // media:// protocol — serves only allowed audio files + the covers dir.
 // ---------------------------------------------------------------------------
-
-function mimeTypeFor(ext) {
-  switch (ext) {
-    case '.mp3':
-      return 'audio/mpeg'
-    case '.m4a':
-    case '.m4b':
-      return 'audio/mp4'
-    case '.aac':
-      return 'audio/aac'
-    case '.flac':
-      return 'audio/flac'
-    case '.ogg':
-    case '.opus':
-      return 'audio/ogg'
-    case '.wav':
-      return 'audio/wav'
-    case '.jpg':
-    case '.jpeg':
-      return 'image/jpeg'
-    case '.png':
-      return 'image/png'
-    default:
-      return 'application/octet-stream'
-  }
-}
 
 function registerMediaProtocol() {
   protocol.handle('media', async (request) => {
@@ -590,8 +589,21 @@ function registerIpcHandlers() {
     // Defense in depth: the generic settings patch channel must never be a
     // side-door to set/clear the VirusTotal key or flip `virusTotalEnabled`
     // without going through `virusTotal:setKey`'s validation — strip both
-    // before applying, regardless of what the caller sent.
-    const { virusTotalApiKey, virusTotalEnabled, ...safePatch } = patch ?? {}
+    // before applying, regardless of what the caller sent. Same logic for
+    // the phone-server secrets/PIN/port/enabled flag: `isAuthorized`/
+    // `handleAuth` (electron/lib/phoneServer.js) read `getSettings()` live
+    // per request, so setting these here would take effect instantly with
+    // no restart and no UI trace, and would bypass `phone:setPort`'s
+    // 1024-65535 validation entirely.
+    const {
+      virusTotalApiKey,
+      virusTotalEnabled,
+      phoneServerPin,
+      phoneServerSecret,
+      phoneServerPort,
+      phoneServerEnabled,
+      ...safePatch
+    } = patch ?? {}
     const settings = await saveSettings(safePatch)
     return stripSecretSettings(settings)
   })
@@ -664,6 +676,62 @@ function registerIpcHandlers() {
   ipcMain.handle('virusTotal:scanBook', async (event, bookId) => {
     if (!virusTotalScanner) return { queued: false }
     return virusTotalScanner.scanBook(bookId)
+  })
+
+  // Phone server — listen from an iPhone/iPad on the LAN/Tailscale (see
+  // electron/lib/phoneServer.js). `pin` IS included here (unlike
+  // `settings:get`/`stripSecretSettings`) — the desktop Settings UI needs to
+  // display it so the user can type it into their phone.
+  ipcMain.handle('phone:getStatus', async () => phoneServer.getStatus())
+
+  ipcMain.handle('phone:setEnabled', async (event, enabled) => {
+    await saveSettings({ phoneServerEnabled: !!enabled })
+    if (enabled) {
+      await phoneServer.start()
+    } else {
+      await phoneServer.stop()
+    }
+    return phoneServer.getStatus()
+  })
+
+  ipcMain.handle('phone:setPort', async (event, port) => {
+    const parsed = Number(port)
+    if (!Number.isInteger(parsed) || parsed < 1024 || parsed > 65535) {
+      // Renderer already validates this client-side (SettingsView.jsx), but
+      // a direct/malformed IPC call can still reach here. Resolve with the
+      // same `getStatus()`-shaped value every other phone:* handler
+      // resolves with (rather than throwing) so the renderer's normal
+      // `status?.error` display path handles it — a thrown Error here gets
+      // wrapped by Electron into "Error invoking remote method 'phone:
+      // setPort': Error: ...", which the renderer's catch-fallback then
+      // shows verbatim as a toast.
+      return { ...phoneServer.getStatus(), error: 'invalid_port' }
+    }
+    await saveSettings({ phoneServerPort: parsed })
+    // Guard on "enabled", not "running": after a failed bind (e.g.
+    // EADDRINUSE) `getStatus().running` is false, so gating the restart on
+    // it made changing the port a dead end — the server just stayed down
+    // with the stale error forever, even though the user just fixed it.
+    if (settingsCache.phoneServerEnabled) await phoneServer.restart()
+    return phoneServer.getStatus()
+  })
+
+  ipcMain.handle('phone:regeneratePin', async () => {
+    // A fresh secret means every previously-issued session cookie's
+    // HMAC(secret, pin) stops matching — regenerating always invalidates
+    // existing phone sessions, whether or not the PIN string happens to
+    // repeat.
+    const pin = String(crypto.randomInt(0, 1000000)).padStart(6, '0')
+    const secret = crypto.randomBytes(32).toString('hex')
+    await saveSettings({ phoneServerPin: pin, phoneServerSecret: secret })
+    const status = phoneServer.getStatus()
+    // Unlike start/stop/restart (which go through phoneServer.js's own
+    // notifyStatus()), this handler mutates settings directly — without this,
+    // only the invoking window's IPC response saw the new PIN and any other
+    // already-open window (or the same window's own status listener) stayed
+    // on the stale one until the next unrelated status change.
+    broadcastPhoneStatus(status)
+    return status
   })
 }
 
@@ -746,8 +814,19 @@ async function bootstrap() {
     }
   })
 
+  phoneServer = createPhoneServer({
+    getLibrary: () => library,
+    getSettings: () => settingsCache,
+    saveSettings,
+    onStatusChange: broadcastPhoneStatus
+  })
+
   registerMediaProtocol()
   registerIpcHandlers()
+
+  if (settingsCache.phoneServerEnabled) {
+    await phoneServer.start()
+  }
 
   // Re-add persisted, non-done torrents from a previous session. Runs
   // before any window exists — safe, since progress/done broadcasts inside
@@ -790,6 +869,7 @@ app.on('before-quit', (event) => {
   event.preventDefault()
   quitting = true
   virusTotalScanner?.destroy()
+  phoneServer?.stop().catch((err) => console.error('[main] error stopping phone server:', err))
   torrentManager
     .destroy()
     .catch((err) => console.error('[main] error destroying torrent client:', err))

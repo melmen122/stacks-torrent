@@ -4,6 +4,106 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [Phase 5] — Listen on Your Phone (Browser Streaming + Tailscale Support)
+
+### Added
+
+- **Phone server** — Embedded HTTP server that streams the audiobook library to any browser on the LAN or via Tailscale
+  - Runs inside Electron on port 8787 (configurable, 1024–65535)
+  - Single shared 6-digit PIN authentication; sessions survive app restart
+  - Full playback controls in the web app: play/pause, seek, ±30s, chapters, volume
+  - HTTP range request support for seeking without buffering entire file
+  - Playback position syncs both ways with the desktop app
+  - No app installation required; works in Safari, Chrome, Firefox on iPhone/iPad or any browser
+  - **"Add to Home Screen"** makes a fullscreen icon on iOS; Media Session API enables lock-screen/AirPods/CarPlay controls
+
+- **Settings panel** — "Listen on your phone" section in Settings
+  - Toggle to enable/disable server
+  - Display of current PIN with regenerate button (invalidates all phone sessions)
+  - Port configuration field (validation: 1024–65535)
+  - Live status indicator and list of reachable addresses, labeled "Tailscale" (100.64.0.0/10) or "Wi-Fi / LAN"
+  - DNS-rebinding protection: Host header validation (IP literals, localhost, *.ts.net only)
+
+- **Tailscale integration walkthrough** — README includes step-by-step guide
+  - Install Tailscale on PC and phone, sign into same account
+  - Use the Tailscale address from Settings (e.g., `http://mypc.ts.net:8787`)
+  - Listen to library from anywhere with encrypted, secure tunnel
+  - No port forwarding required or recommended
+
+- **HTTP API** — Phone server provides JSON endpoints:
+  - `POST /api/auth` — PIN authentication, returns session cookie
+  - `GET /api/session` — Verify session validity
+  - `GET /api/library` — List all books with metadata (title, author, cover, chapters, position)
+  - `GET /api/books/:id` — Get book details
+  - `POST /api/position` — Save playback position (syncs to desktop)
+  - `GET /cover/:bookId` — Serve cover image
+  - `GET /media/:bookId/:fileIndex` — Stream audio file (supports HTTP 206 range requests)
+  - Static file serving for mobile web app (`index.html`, `app.js`, `app.css`, `manifest.webmanifest`, icons)
+
+- **Security design**
+  - Client never supplies filesystem paths; sends bookId + file index, server resolves + re-validates against audio extension allowlist
+  - HMAC-SHA256(secret, pin) session tokens prevent replay attacks
+  - Rate limiting: 5 failed auth attempts per IP per 60 seconds
+  - Host header check prevents DNS-rebinding attacks
+  - No HTTPS (not needed over Tailscale; plain HTTP over encrypted tunnel is safe)
+
+- **Mobile web app** (dependency-free static files)
+  - `mobile/index.html` — Page structure
+  - `mobile/app.js` — API calls, Media Session API integration, UI rendering
+  - `mobile/app.css` — Responsive design for phone/tablet
+  - `mobile/manifest.webmanifest` — PWA manifest for home screen installation
+  - `mobile/icons/` — App icons (SVG + PNG 180/192/512)
+
+- **IPC API**
+  - `phone:getStatus()` — Returns {enabled, running, port, pin, error, urls}
+  - `phone:setEnabled(enabled)` — Enable/disable server (generates PIN on first enable)
+  - `phone:setPort(port)` — Change listening port, restart if running
+  - `phone:regeneratePin()` — Generate new PIN/secret, invalidate existing sessions
+  - `phone:status-changed` event — Broadcast status changes to all windows
+  - Preload shortcuts: `window.api.phoneGetStatus/phoneSetEnabled/phoneSetPort/phoneRegeneratePin/onPhoneStatusChanged`
+
+- **Data model**
+  - Settings keys: `phoneServerEnabled` (default false), `phoneServerPort` (8787), `phoneServerPin`, `phoneServerSecret`
+  - PIN/secret generated on first enable and persisted so sessions survive restart
+
+- **Core module** — `electron/lib/phoneServer.js`
+  - `createPhoneServer(deps)` factory with injectable library, settings, save callback, status callback
+  - Testable without Electron (no app/BrowserWindow dependency)
+  - Auth throttling, DNS-rebinding guard, Range request parsing (via mediaRange.js)
+  - Shared MIME type mapping via new `electron/lib/mimeTypes.js`
+
+- **Tests** — 49 new unit tests in `tests/phoneServer.test.js`
+  - Authentication (PIN validation, throttling, retry-after)
+  - Session management (cookie generation, constant-time comparison)
+  - API endpoints (library, book detail, cover, media with ranges)
+  - Address labeling (Tailscale vs LAN)
+  - Head request handling, file validation, error cases
+
+- **Build integration** — `package.json` electron-builder config
+  - `mobile/**/*` added to files array so web app ships in the installer
+
+### Known Limitations
+
+- Streaming only; no offline download to phone yet
+- IPv4 only (no IPv6 support for bind or displayed addresses)
+- Plain HTTP (safe over Tailscale, fine on trusted LAN, do NOT expose to internet via port forwarding)
+
+### Documentation
+
+- **README.md**
+  - Features: added "Listen on your phone" headline
+  - New **Listen on Your Phone** section: quick start, "Add to Home Screen" steps, Tailscale walkthrough, how it works, port config, PIN regeneration
+  - Project Structure: added `phoneServer.js`, `mimeTypes.js`, `mobile/` directory with sub-files
+  - Testing: added phone server tests to the list, updated test count (231 → 287)
+
+- **docs/api.md**
+  - New **Phone Server** section: `phoneGetStatus()`, `phoneSetEnabled()`, `phoneSetPort()`, `phoneRegeneratePin()` with descriptions, return types, examples
+  - Phone Server event: `onPhoneStatusChanged(callback)` with callback type and example
+  - Preload utilities: `phoneGetStatus()`, `phoneSetEnabled()`, `phoneSetPort()`, `phoneRegeneratePin()`, `onPhoneStatusChanged()`
+
+- **docs/models.md**
+  - Settings model: added `phoneServerEnabled`, `phoneServerPort`, `phoneServerPin`, `phoneServerSecret` with defaults and note on generation/persistence
+
 ## [Phase 4] — Safety Features (Pre-Download Filtering + VirusTotal Scanning)
 
 ### Added
